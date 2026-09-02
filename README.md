@@ -42,11 +42,21 @@
 2. 在瀏覽裡找到 **VibeGuard** → **Install** → 同意 capabilities → 啟用
 3. 面板：側邊欄的 🛡️ VibeGuard。它是**快照**：worker 每次掃描後重寫 `panel.html`，關閉再開面板即可看到最新（Marketplace 安裝沒有 dev watcher，面板不會自動刷新；要真即時請按面板的 🚀 開內嵌 dashboard）
 
+### 方法一之二：不經 Marketplace，直接貼 git URL
+
+Orca → `Cmd-,` → **Plugins** → **Install plugin** → 選 **Git**，貼：
+
+```
+https://github.com/m1105/vibeguard.git#v0.2.0
+```
+
+**`#` 後面的 tag 或 commit 是必填**（Orca 要求安裝釘在明確版本；只貼 URL 會被拒絕）。Orca 會 `git clone --depth 1 --branch v0.2.0` 這個 repo，讀根目錄的 `orca-plugin.json`。要升級就重新安裝新的 tag。
+
 ### 方法二：開發者（乾淨部署資料夾 + devPluginPaths，面板自動更新）
 
 ```bash
-git clone https://github.com/m1105/vibeguard-orca.git
-cd vibeguard-orca
+git clone https://github.com/m1105/vibeguard.git
+cd vibeguard
 npm test                    # 應全綠
 node scripts/deploy.mjs     # 佈署到 ~/orca/plugins-deploy/vibeguard-orca（只放 runtime 檔）
 ```

@@ -6,7 +6,7 @@
       "id": "vibeguard.vibeguard-orca",
       "source": {
         "kind": "git",
-        "url": "https://github.com/m1105/vibeguard-orca.git",
+        "url": "https://github.com/m1105/vibeguard.git",
         "ref": "main"
       },
       "description": "Real-time security advisories for AI-generated code: local L1/L2 regex + optional LLM semantic review, severity panel, one-click fix to the agent terminal, GitHub issue tracking, false-positive learning. Advisory only — expect false positives. UI in 繁體中文 / English / 简体中文 / 日本語.",

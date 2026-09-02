@@ -42,11 +42,21 @@ When coding agents (Claude / Codex / Kimi / Gemini / …) write files in your Or
 2. Find **VibeGuard** → **Install** → consent to the capabilities → enable
 3. The panel is the 🛡️ VibeGuard entry in the sidebar. It is a **snapshot**: the worker rewrites `panel.html` after each scan; close and reopen the panel to see the latest (Marketplace installs have no dev watcher, so the panel does not auto-refresh; for true live updates press 🚀 to open the embedded dashboard)
 
+### Option A′: direct git URL, no marketplace
+
+Orca → `Cmd-,` → **Plugins** → **Install plugin** → choose **Git** and paste:
+
+```
+https://github.com/m1105/vibeguard.git#v0.2.0
+```
+
+**The `#tag` (or `#commit`) is mandatory** — Orca pins every install to an explicit version and rejects a bare URL. It runs `git clone --depth 1 --branch v0.2.0` on the repo and reads `orca-plugin.json` at the root. To upgrade, install the newer tag.
+
 ### Option B: developers (clean deploy folder + devPluginPaths, panel auto-refreshes)
 
 ```bash
-git clone https://github.com/m1105/vibeguard-orca.git
-cd vibeguard-orca
+git clone https://github.com/m1105/vibeguard.git
+cd vibeguard
 npm test                    # should be all green
 node scripts/deploy.mjs     # deploys to ~/orca/plugins-deploy/vibeguard-orca (runtime files only)
 ```

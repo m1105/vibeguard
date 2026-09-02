@@ -5,9 +5,9 @@
   "type": "module",
   "description": "VibeGuard for Orca — real-time security screening for AI-generated code (Orca plugin). Local L1/L2 regex + optional LLM semantic review. Advisory tool: expect false positives.",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/m1105/vibeguard-orca.git" },
-  "homepage": "https://github.com/m1105/vibeguard-orca#readme",
-  "bugs": { "url": "https://github.com/m1105/vibeguard-orca/issues" },
+  "repository": { "type": "git", "url": "https://github.com/m1105/vibeguard.git" },
+  "homepage": "https://github.com/m1105/vibeguard#readme",
+  "bugs": { "url": "https://github.com/m1105/vibeguard/issues" },
   "keywords": ["orca", "orca-plugin", "security", "sast", "secrets", "ai-generated-code", "deepsec"],
   "scripts": {
     "test": "node --test",
