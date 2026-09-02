@@ -48,6 +48,7 @@ Panel buttons send text into terminals. Findings originate from **untrusted inpu
 **No sensitive data anywhere in the tree — not in code, comments, docs, issues, tests or commit messages.**
 
 - Test fixtures that need a secret-shaped string must be *obviously fake*: contain `EXAMPLE`, `FAKE`, `DUMMY`, `REDACTED`, `PLACEHOLDER`, or an alphabet/number run such as `abcdef…`, `a1b2c3…`, `0123456789`. Use the canonical AWS example key `AKIAIOSFODNN7EXAMPLE`. Hosts must be `example.com`-style.
+- Some providers are matched by GitHub push protection *on shape alone* (Stripe `sk_live_` / `sk_test_` keys): those fixtures must be assembled at runtime, e.g. `['sk_live', 'ABCDEFghijklMNOPQRstuvwx'].join('_')`, so the full shape never appears in a committed file. The hygiene test rejects such literals regardless of content.
 - No private absolute paths (`/Users/<name>/…`, `/home/<name>/…`, `C:\Users\…`), no personal e-mail addresses, no names of private projects or customers.
 - `panel.html` is a build artifact; only the empty template may be committed (`git checkout panel.html` before committing if the worker rewrote it).
 - These rules are enforced by `test/repo-hygiene.test.mjs`, which is part of `npm test` and scans every file that would be committed (tracked + untracked-not-ignored) with the project's own secret rules.
@@ -104,6 +105,7 @@ dashboard server：只綁 `127.0.0.1`、每個請求都要 token、`Host` 不是
 **樹裡任何地方都不得有機敏資料——程式碼、註解、文件、issue、測試、commit 訊息都算。**
 
 - 需要密鑰形狀字串的測試 fixture 必須「一眼假」：含 `EXAMPLE`、`FAKE`、`DUMMY`、`REDACTED`、`PLACEHOLDER`，或 `abcdef…`、`a1b2c3…`、`0123456789` 這類連續序列；AWS 用官方範例 `AKIAIOSFODNN7EXAMPLE`；主機名用 `example.com`。
+- 有些家族 GitHub push protection **純看形狀**就擋（Stripe 的 `sk_live_`／`sk_test_`）：這類 fixture 必須在執行期組合，例如 `['sk_live', 'ABCDEFghijklMNOPQRstuvwx'].join('_')`，讓完整形狀永遠不出現在會 commit 的檔案裡。閘門測試對這類字面值一律拒絕，不管內容多假。
 - 不得有私人絕對路徑（`/Users/<名字>/…`、`/home/<名字>/…`、`C:\Users\…`）、個人信箱、私人專案或客戶名稱。
 - `panel.html` 是產物，只能 commit 空模板（worker 改寫過就先 `git checkout panel.html`）。
 - 以上由 `test/repo-hygiene.test.mjs` 強制執行——它是 `npm test` 的一部分，用本專案自己的密鑰規則掃全部「會進版控」的檔案（已追蹤 + 未追蹤但未被 ignore）。

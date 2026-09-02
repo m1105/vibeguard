@@ -50,6 +50,9 @@ const FILES = candidateFiles().filter(isText);
 // 「一眼看得出是假的」：測試 fixture 只准長這樣（policy 寫在 CONTRIBUTING.md）
 export function looksObviouslyFake(s) {
   const str = String(s);
+  // GitHub push protection 對這些家族「純看形狀」，再假也擋（實際發生：Stripe fixture 被 GH013 拒推）。
+  // 這類 fixture 必須在執行期組合：['sk_live', 'xxxx'].join('_')，檔案裡不得出現完整形狀。
+  if (/^[sr]k_(live|test)_/.test(str)) return false;
   if (/EXAMPLE|FAKE|DUMMY|REDACTED|PLACEHOLDER|CHANGEME|YOUR[_-]?(KEY|TOKEN|SECRET)/i.test(str)) return true;
   if (/abcdef|ABCDEF|AbCdEf|aAbBcC|a1b2c3|0123456789|1234567890|xxxxxx|XXXXXX/i.test(str)) return true;
   // 只有 PEM 標頭、沒有 base64 內容（測試只驗標頭）

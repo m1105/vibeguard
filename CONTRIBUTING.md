@@ -10,7 +10,7 @@ _English first, 中文在後半。The rules apply to humans and AI agents alike 
 4. **`shield/` is pure.** No Orca imports; all IO (fs, child_process, `host.call`) is injected as parameters. That is why the whole engine is unit-testable without a host.
 5. **Never guess Orca host method / event / capability names.** They come from [`docs/01-api-confirmation.md`](docs/01-api-confirmation.md) and are centralized in `shield/host-methods.mjs`. The manifest fields are closed sets.
 6. **Fidelity to DeepSec beats "improvements".** Rule ids, regexes, severities and thresholds are ported verbatim from DeepSec's Python; quirks are preserved and pinned by tests. If a behaviour is in doubt, run the original regex with `python3` and match it. Record any deliberate deviation in `docs/02-deepsec-fidelity.md`.
-7. **No sensitive data in the tree** — code, comments, docs, tests, commit messages. Fixtures must be obviously fake (`EXAMPLE`, `FAKE`, alphabet runs). Full policy in [`SECURITY.md`](SECURITY.md); enforced by `test/repo-hygiene.test.mjs`.
+7. **No sensitive data in the tree** — code, comments, docs, tests, commit messages. Fixtures must be obviously fake (`EXAMPLE`, `FAKE`, alphabet runs); families that GitHub push protection matches by shape alone (Stripe `sk_live_`) must be assembled at runtime with `join`. Full policy in [`SECURITY.md`](SECURITY.md); enforced by `test/repo-hygiene.test.mjs`.
 8. **Comments explain *why*, briefly.** Chinese or English, follow the surrounding code.
 
 ## Panel / dashboard rules (template literals)
