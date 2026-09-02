@@ -1,5 +1,7 @@
 # VibeGuard — DeepSec 來源忠實度分析（/tmp/DeepSec @ fff031f）
 
+_English: [`02-deepsec-fidelity.en.md`](02-deepsec-fidelity.en.md)_
+
 分析對象：`deepsec/shield/` 的 scanner.py、rules/patterns.py、rules/sast.py、rules/ai_audit.py、dedup.py、ignore.py。
 **所有 JS port 的規則 id、正則、嚴重度、閾值必須與此文件一致（逐字），不得自創。**
 

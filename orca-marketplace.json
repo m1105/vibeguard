@@ -9,8 +9,10 @@
         "url": "https://github.com/m1105/vibeguard-orca.git",
         "ref": "main"
       },
-      "description": "AI 生成代碼即時安全守護：L1 本地快篩 + L2/L3 LLM 語意審查，三色分級面板、一鍵修復、GitHub issue 追蹤。",
-      "categories": ["security"]
+      "description": "Real-time security advisories for AI-generated code: local L1/L2 regex + optional LLM semantic review, severity panel, one-click fix to the agent terminal, GitHub issue tracking, false-positive learning. Advisory only — expect false positives. UI in 繁體中文 / English / 简体中文 / 日本語.",
+      "categories": [
+        "security"
+      ]
     }
   ]
 }

@@ -103,3 +103,50 @@ export function uniqueFindings(findings) {
   }
   return result;
 }
+
+// ── finding 身分（不含行號）──
+// agent 在檔案上方插幾行，全檔行號整體位移，但問題本身沒變。身分若含行號，
+// 舊 finding 會整批被判「已修正」、新的整批掛 NEW，連 panel 的 meaningfulHash 都跟著變
+// （面板反覆重烤重掛，使用者捲到一半被拉回頂端）。改用「命中行的內容」當指紋。
+function fnv1a(s) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+// 命中行的原始碼（snippet 裡 ln === line 那行）；沒有就退回 evidence
+function hitText(finding) {
+  const line = finding?.line;
+  const snippet = Array.isArray(finding?.snippet) ? finding.snippet : null;
+  if (snippet && Number.isInteger(line)) {
+    const hit = snippet.find((s) => s?.ln === line);
+    if (hit && typeof hit.text === 'string') return hit.text.trim();
+  }
+  if (typeof finding?.evidence === 'string') return finding.evidence.trim().slice(0, 200);
+  return '';
+}
+
+export function fingerprint(finding) {
+  return fnv1a(keyOf(finding?.rule ?? '', finding?.target ?? '', finding?.title ?? '', hitText(finding)));
+}
+
+// 同指紋多筆（例：同檔 6 個 ACAO 萬用字元）依行號順序給序號，整體位移後仍一一對應
+export function assignIdentities(findings) {
+  const seen = new Map();
+  for (const finding of [...findings].sort((a, b) => (a?.line ?? 0) - (b?.line ?? 0))) {
+    const k = fingerprint(finding);
+    const n = seen.get(k) ?? 0;
+    seen.set(k, n + 1);
+    finding.identity = k + '#' + n;
+  }
+  return findings;
+}
+
+// 舊資料（storage 裡換版前寫的）沒有 identity 欄位 → 現算
+export function identityOf(finding) {
+  const id = finding?.identity;
+  return typeof id === 'string' && id ? id : fingerprint(finding) + '#0';
+}

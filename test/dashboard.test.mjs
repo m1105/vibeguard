@@ -42,3 +42,41 @@ test('dashboard: 完整渲染（KPI/snippet/掃描記錄/已修正/未讀/設定
   }
   assert.ok(!html.includes('innerHTML ='), '一律 textContent 渲染');
 });
+
+// ── i18n（與 panel 同一份字典；dashboard 可 fetch，切語言直接 POST /api/action locale）──
+import { LOCALES, LOCALE_NAMES } from '../i18n.mjs';
+
+test('dashboard: i18n 字典整包內嵌（與 i18n.mjs 同一份）+ t() + 語言切換器', () => {
+  const html = buildDashboardHtml();
+  const start = html.indexOf('const I18N = ');
+  assert.ok(start !== -1, '找不到 I18N 內嵌');
+  const pack = JSON.parse(html.slice(start + 'const I18N = '.length, html.indexOf(';\n', start)));
+  assert.deepEqual(Object.keys(pack.locales).sort(), Object.keys(LOCALES).sort());
+  assert.deepEqual(pack.locales.en, LOCALES.en, '內嵌字典必須就是 i18n.mjs 的（單一真相）');
+  assert.deepEqual(pack.names, LOCALE_NAMES);
+  assert.ok(html.includes('function t('), '要有 t()');
+  assert.ok(html.includes('id="lang-select"'), '要有語言切換器');
+  assert.ok(html.includes('vgd.lang'), '語言偏好存 localStorage（vgd. 前綴與 panel 區隔）');
+  assert.ok(html.includes('navigator.language'), 'auto 看瀏覽器語言');
+  assert.ok(html.includes("api('locale'") || html.includes("'locale'"), '切語言要 POST locale 動作同步 worker');
+  assert.ok(html.includes('settings.locale'), 'worker 端偏好作為次順位');
+  assert.ok(html.includes('function applyI18n'), '靜態字串套用');
+  assert.ok(html.includes("querySelectorAll('[data-i18n]')"));
+  assert.ok(html.includes('documentElement.lang'));
+});
+
+test('dashboard: 靜態字串走 data-i18n；關鍵動態訊息走 t()', () => {
+  const html = buildDashboardHtml();
+  for (const key of ['dashSubtitle', 'chipAll', 'chipSerious', 'chipNormal', 'markAllRead', 'settings', 'dashSettingsHint', 'notifyToggle', 'llmPicker', 'langLabel', 'emptyTitle', 'dashEmptySub']) {
+    assert.ok(html.includes(`data-i18n="${key}"`), `靜態字串 ${key} 要標 data-i18n`);
+    assert.ok(LOCALES['zh-TW'][key], `字典要有 ${key}`);
+  }
+  const script = html.slice(html.indexOf('<' + 'script>'), html.indexOf('</' + 'script>'));
+  for (const key of ['unread', 'dashFailed', 'unknownError', 'dashOpened', 'dashFixSent', 'dashIssueSent', 'dashIgnored', 'dashDismissed',
+    'serious', 'normal', 'resolved', 'noScanYet', 'watchMeta', 'resolvedTitle', 'scanLogTitle', 'scanFailed', 'scanResult',
+    'dashNotifyUpdated', 'dashLlmSwitched', 'dashUpdated', 'dashDisconnected', 'issueClosed', 'issueOpen', 'btnOpen', 'btnFix', 'btnIssue', 'btnIgnoreFile', 'btnDismiss', 'langChanged']) {
+    assert.ok(script.includes(`t('${key}'`), `訊息 ${key} 要走 t()`);
+    assert.ok(LOCALES['zh-TW'][key], `字典要有 ${key}`);
+  }
+  assert.ok(html.includes('noteKey'), '掃描記錄 note 優先用 noteKey 翻譯');
+});

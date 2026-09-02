@@ -54,6 +54,7 @@ function fakeDeps(overrides = {}) {
     panelBakeIntervalMs: 0, // 測試預設不節流（掃完立即烤）；節流案例自行覆寫
     listManagedWorktrees: async () => [], // 測試預設無既有 worktree；需要時覆寫
     listTerminalsFor: async () => ({ agent: null, shell: null }), // 測試預設查無 terminal；需要時覆寫
+    systemLocale: 'zh-TW', // 通知/訊息語言跟隨系統；測試固定 zh-TW 才不受跑測試機器的 LANG 影響
     deferred: [], // deferred 工作的 promise 收集器（測試 await Promise.all(deps.deferred) 等它跑完）
   };
   // 測試用 microtask 跑 deferred（可 await deps.deferred）；prod 預設 setTimeout(0) 延後
@@ -91,7 +92,7 @@ test('scanFile：掃到密鑰 → notify + storage.set + 重寫 panel.html + 回
   const findings = await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
   assert.ok(findings.some((f) => f.rule === 'hardcoded_secret_aws_access_key'));
   assert.ok(calls.some((c) => c.method === HOST.NOTIFY && c.params.body.includes('1 個致命')));
-  const set = calls.find((c) => c.method === HOST.STORAGE_SET);
+  const set = calls.find((c) => c.method === HOST.STORAGE_SET && c.params.key === 'findings');
   assert.ok(set.params.value.manual.unknown.some((f) => f.rule === 'hardcoded_secret_aws_access_key'));
   // panel.html 被重寫且內嵌該筆 finding
   assert.ok(deps.lastPanelHtml.includes('hardcoded_secret_aws_access_key'));
@@ -1026,4 +1027,183 @@ test('重烤節流：短窗內多次掃描合併重烤（高頻 remount 會閃�
   const settled = bakes - before;
   assert.ok(settled >= 2 && settled <= 3, '尾端要補烤一次（最終資料不能漏），實際 ' + settled);
   deactivate();
+});
+
+test('掃描記錄帶 severity 分佈：medium finding 不該記成嚴重（面板圖示的資料來源）', async () => {
+  const { orca, commands } = fakeOrca();
+  const deps = fakeDeps({
+    readFile: async () => "res.setHeader('Access-Control-Allow-Origin', '*');\nres.setHeader('Access-Control-Allow-Origin', '*');\n",
+  });
+  await activate(orca, deps);
+  await commands.get('vibeguard.scanFile')({ path: '/x/routes.ts' });
+  const line = deps.lastPanelHtml.split('\n').find((l) => l.startsWith('const DATA = window.__VIBEGUARD_DATA__ || '));
+  const data = JSON.parse(line.slice('const DATA = window.__VIBEGUARD_DATA__ || '.length).replace(/;$/, ''));
+  const scan = data.scans.find((s) => s.kind === 'scan');
+  assert.equal(scan.count, 2);
+  assert.deepEqual(scan.sev, { medium: 2 }, '只記非零的層級');
+  deactivate();
+});
+
+test('掃描記錄持久化：worker 重啟（toggle 插件）後不歸零', async () => {
+  const { orca, commands, store } = fakeOrca();
+  const deps = fakeDeps();
+  await activate(orca, deps);
+  await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
+  await Promise.all(deps.deferred);
+  const saved = store.get('scanLog');
+  assert.ok(Array.isArray(saved), 'scanLog 要寫進 storage');
+  assert.ok(saved.some((s) => s.kind === 'scan' && s.path === '/x/a.js'));
+  deactivate();
+
+  // 重啟（同一份 storage）→ 舊記錄要回來
+  const restarted = fakeDeps();
+  await activate({ ...orca, host: orca.host }, restarted);
+  await commands.get('vibeguard.scanFile')({ path: '/x/b.js' }); // 換個檔 → findings 變 → 重烤 panel
+  const line = restarted.lastPanelHtml.split('\n').find((l) => l.startsWith('const DATA = window.__VIBEGUARD_DATA__ || '));
+  const data = JSON.parse(line.slice('const DATA = window.__VIBEGUARD_DATA__ || '.length).replace(/;$/, ''));
+  assert.ok(data.scans.some((s) => s.kind === 'scan' && s.path === '/x/a.js'), '重啟後舊掃描記錄要還在');
+  deactivate();
+});
+
+test('行號位移不算已修正：agent 在檔案上方插一行，findings 不該整批進「已修正」', async () => {
+  const { orca, commands, store } = fakeOrca();
+  let body = "const k = 'AKIAIOSFODNN7EXAMPLE';\nres.setHeader('Access-Control-Allow-Origin', '*');\n";
+  const deps = fakeDeps({ readFile: async () => body });
+  await activate(orca, deps);
+  const first = await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
+  assert.ok(first.length >= 2);
+  assert.deepEqual(store.get('resolvedFindings') ?? [], [], '第一次掃不該有已修正');
+
+  // 在最上方插兩行註解 → 所有 finding 行號 +2，問題本身沒動
+  body = '// 新增註解\n// 又一行\n' + body;
+  const second = await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
+  assert.equal(second.length, first.length);
+  assert.deepEqual(store.get('resolvedFindings') ?? [], [], '行號位移不是修好了');
+  deactivate();
+});
+
+test('真的移除問題才算已修正（位移修正不能反過來讓真修復漏記）', async () => {
+  const { orca, commands, store } = fakeOrca();
+  let body = "const k = 'AKIAIOSFODNN7EXAMPLE';\nres.setHeader('Access-Control-Allow-Origin', '*');\n";
+  const deps = fakeDeps({ readFile: async () => body });
+  await activate(orca, deps);
+  await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
+  body = "const k = process.env.AWS_KEY;\nres.setHeader('Access-Control-Allow-Origin', '*');\n"; // 密鑰改成環境變數
+  await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
+  const res = store.get('resolvedFindings') ?? [];
+  assert.equal(res.length, 1, '真的修掉一筆 → 已修正 1 筆');
+  assert.equal(res[0].rule, 'hardcoded_secret_aws_access_key');
+  deactivate();
+});
+
+// ── i18n：worker 端語言（.locale → 通知 / 送 agent 的訊息 / 掃描記錄 noteKey / doAction 回覆）──
+import { buildIssueMessage, isAgentTerminal as isAgentTerm, classifyTerminals as classifyTerms } from '../main.mjs';
+
+test('i18n：.locale = en → 通知標題/內文英文；面板 settings 內嵌 locale 與 resolvedLocale', async () => {
+  const { orca, commands, calls } = fakeOrca();
+  const deps = fakeDeps({
+    readFile: async (p) => (String(p).endsWith('.locale') ? 'en\n' : 'const k = "AKIAIOSFODNN7EXAMPLE";'),
+  });
+  await activate(orca, deps);
+  try {
+    await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' });
+    const n = calls.find((c) => c.method === HOST.NOTIFY);
+    assert.ok(n, '要有通知');
+    assert.equal(n.params.title, '🛡️ VibeGuard found dangerous code');
+    assert.ok(n.params.body.includes('a.js: 1 new critical / 1 serious issue(s)'), n.params.body);
+    assert.ok(deps.lastPanelHtml.includes('"locale":"en"'), '面板要內嵌 locale 偏好');
+    assert.ok(deps.lastPanelHtml.includes('"resolvedLocale":"en"'), '面板要內嵌解析後語系');
+  } finally { deactivate(); }
+});
+
+test('i18n：.locale 不存在 → auto 依系統語言（可注入 systemLocale）；不認得的偏好視同 auto', async () => {
+  for (const [file, sys, expectTitle] of [
+    [null, 'ja-JP', '🛡️ VibeGuard が危険なコードを検出'],
+    [null, 'de-DE', '🛡️ VibeGuard found dangerous code'],
+    ['xx-nope', 'zh-TW', '🛡️ VibeGuard 偵測到危險代碼'],
+    ['auto', 'zh-CN', '🛡️ VibeGuard 检测到危险代码'],
+  ]) {
+    const { orca, commands, calls } = fakeOrca();
+    const deps = fakeDeps({
+      systemLocale: sys,
+      readFile: async (p) => {
+        if (String(p).endsWith('.locale')) { if (file == null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return file; }
+        return 'const k = "AKIAIOSFODNN7EXAMPLE";';
+      },
+    });
+    await activate(orca, deps);
+    try {
+      await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' });
+      const n = calls.find((c) => c.method === HOST.NOTIFY);
+      assert.equal(n.params.title, expectTitle, `file=${file} sys=${sys}`);
+    } finally { deactivate(); }
+  }
+});
+
+test('i18n：doAction locale 寫 .locale（只收 auto 或已知語系）；回覆帶 noteKey 供 dashboard 翻譯', async () => {
+  const { orca, commands } = fakeOrca();
+  const written = {};
+  const deps = fakeDeps({
+    dashboardToken: 'tokLc', panelServer: undefined,
+    writeFile: async (p, v) => { written[String(p)] = v; },
+    listTerminalsFor: async () => ({ agent: 'term_x', agentSure: false, shell: null }),
+  });
+  await activate(orca, deps);
+  try {
+    await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' });
+    const m = String(deps.lastPanelHtml).match(/http:\/\/127\.0\.0\.1:\d+/);
+    const post = (body) => httpJson(m[0], '/api/action?token=tokLc', body);
+    assert.equal((await post({ kind: 'locale', value: 'ja' })).ok, true);
+    const key = Object.keys(written).find((k) => k.endsWith('.locale'));
+    assert.equal(written[key], 'ja');
+    assert.equal((await post({ kind: 'locale', value: 'auto' })).ok, true);
+    assert.equal(written[key], 'auto');
+    const bad = await post({ kind: 'locale', value: '../evil' });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.reason, 'unknown-locale');
+    // 回覆的 note 走字典 key（dashboard 用自己的語言翻）
+    const r = await post({ kind: 'restart' });
+    assert.equal(r.noteKey, 'noteNeedsToggle');
+    assert.ok(r.note, '同時帶已翻好的 note（舊 dashboard 相容）');
+  } finally { deactivate(); }
+});
+
+test('i18n：buildFixMessage / buildIssueMessage 依語系組訊息；預設 zh-TW 不變', () => {
+  const f = { rule: 'r1', target: '/x/a.js', line: 1, title: 'T', description: 'D', suggestion: 'S' };
+  const zh = buildFixMessage(f);
+  assert.ok(zh.startsWith('【VibeGuard 安全警告】\n檔案：/x/a.js:1\n問題：T'), zh);
+  const en = buildFixMessage(f, 'en');
+  assert.ok(en.startsWith('[VibeGuard security warning]\nFile: /x/a.js:1\nProblem: T\nWhy it is dangerous: D\nSuggested fix: S'), en);
+  assert.ok(en.endsWith('Please fix it directly and explain what you changed.'));
+  const issue = buildIssueMessage(f, 'en');
+  assert.ok(issue.includes('gh issue create'), '要指示 gh issue create');
+  assert.ok(issue.includes('\nvibeguard-key:r1 /x/a.js\n'), '機器標記行格式不因語言而變（worker 靠它對 issue）');
+  assert.ok(buildIssueMessage(f).includes('\nvibeguard-key:r1 /x/a.js\n'));
+});
+
+test('i18n：掃描記錄事件帶 noteKey/noteParams（面板依自己的語言翻）', async () => {
+  const { orca, events, commands } = fakeOrca();
+  const deps = fakeDeps({ dashboardToken: 'tokN', panelServer: undefined });
+  await activate(orca, deps);
+  try {
+    await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' }); // 烤一次面板拿 API 位址
+    events.get('worktree.created')({ worktreeId: 'wt9', path: '/repo' });
+    events.get('worktree.removed')({ worktreeId: 'wt9', path: '/repo' });
+    const m = String(deps.lastPanelHtml).match(/http:\/\/127\.0\.0\.1:\d+/);
+    const st = await httpJson(m[0], '/api/state?token=tokN');
+    const scans = st.scans;
+    const w = scans.find((s) => s.kind === 'watch' && s.path === '/repo');
+    const u = scans.find((s) => s.kind === 'unwatch');
+    assert.equal(w?.noteKey, 'noteWatchStart');
+    assert.equal(u?.noteKey, 'noteUnwatch');
+    assert.ok(w.note, '舊面板相容：仍帶已翻好的 note');
+  } finally { deactivate(); }
+});
+
+test('終端分流：Orca ≥1.4.193 的 agentIdentity 欄位是確定訊號（標題/preview 認不出也算 agent）', () => {
+  assert.ok(isAgentTerm({ title: 'Init', preview: '', agentIdentity: 'kimi' }));
+  assert.ok(!isAgentTerm({ title: 'Init', preview: '' }), '沒欄位、沒特徵 → 不算');
+  const r = classifyTerms([{ handle: 'h1', connected: true, writable: true, title: 'x', preview: '', agentIdentity: 'claude' }]);
+  assert.equal(r.agent, 'h1');
+  assert.equal(r.agentSure, true);
 });

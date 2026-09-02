@@ -13,12 +13,13 @@ import { scanText, shouldSkipPath } from './shield/scanner.mjs';
 import { llmScan, defaultRunner, LLM_FRAMEWORKS } from './shield/l23-llm.mjs';
 import { LEARNED_FILENAME, parseLearned, serializeLearned, isLearned, addLearned } from './shield/learning.mjs';
 import { redactForLlm } from './shield/redaction.mjs';
+import { assignIdentities, identityOf } from './shield/finding.mjs';
 import { startPanelServer } from './panel-server.mjs';
 import { buildPanelHtml } from './panel-renderer.mjs';
 import { buildDashboardHtml } from './dashboard.mjs';
+import { t, resolveLocale, detectSystemLocale, LOCALES, DEFAULT_LOCALE } from './i18n.mjs';
 
 const KEEPALIVE_MS = 4 * 60 * 1000; // worker 閒置 5 分鐘會被 reap（docs/01 §5）
-const NOTIFY_TITLE = '🛡️ VibeGuard 偵測到危險代碼';
 const TERMINAL_TEXT_MAX = 4096; // terminal.sendText 上限（docs/01 §1）
 
 let active = null; // { watcher, keepalive, panelServer }（deactivate 是 named export，無參數，只能走模組層狀態）
@@ -50,11 +51,14 @@ const GH_CANDIDATES = ['gh', '/usr/local/bin/gh', '/opt/homebrew/bin/gh'];
 // 標題不含 agent 名時（kimi 的標題是任務文字），輔看 preview 的 TUI 特徵（kimi 的月亮 hint 行）
 export const AGENT_TITLE_RE = /[◐◑◒◓✳✱⣿⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏🌕🌖🌗🌘🌑🌒🌓🌔⏺]|claude|codex|kimi|gemini|copilot|cursor|esc to interrupt|ctrl\+o/i;
 
-export function isAgentTerminal(t = {}) {
-  return AGENT_TITLE_RE.test(`${t.title || ''}\n${t.preview || ''}`);
+export function isAgentTerminal(term = {}) {
+  // Orca ≥1.4.193 的 terminal list 帶 agentIdentity（'claude'/'kimi'/…）：有就是確定訊號；
+  // 沒有（舊版或真 shell）才退回標題/preview 的 TUI 特徵啟發式
+  if (typeof term.agentIdentity === 'string' && term.agentIdentity.trim()) return true;
+  return AGENT_TITLE_RE.test(`${term.title || ''}\n${term.preview || ''}`);
 }
 
-// terminal 分流：Orca API 沒有終端身分欄位（實測 terminal list 只有 title/preview），
+// terminal 分流：舊版 Orca API 沒有終端身分欄位（terminal list 只有 title/preview），
 // 「認不出 agent 特徵」≠「是 shell」——agent 閒置時沒有 spinner、標題可能是任務名（如「Init」），
 // 純指令 + enter:true 誤送 agent 會直接打進對話執行。所以 shell 一律 null：
 // 面板所有指令都走 agent 終端的 ! 本機 shell 模式（! 誤中真 shell 只是 event not found，無害）；
@@ -96,28 +100,30 @@ function runOrcaCli(args) {
 // 清掉換行/ESC/控制字元（防多行注入與 ANSI 逃脫）並限制單欄長度
 const cleanField = (s, max = 500) => String(s ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, max);
 
-export function buildFixMessage(f = {}) {
-  const text =
-    '【VibeGuard 安全警告】\n' +
-    `檔案：${cleanField(f.target, 300)}:${Number.isInteger(f.line) ? f.line : '?'}\n` +
-    `問題：${cleanField(f.title, 200)}\n` +
-    `為什麼危險：${cleanField(f.description)}\n` +
-    `建議修法：${cleanField(f.suggestion)}\n` +
-    '請直接修正並說明你改了什麼。';
+// 送給 agent 的四欄（與 panel-renderer 的 fields() 同格式、同字典 i18n.mjs）
+function messageFields(f, locale) {
+  return [
+    t(locale, 'msgFile', { loc: `${cleanField(f.target, 300)}:${Number.isInteger(f.line) ? f.line : '?'}` }),
+    t(locale, 'msgProblem', { title: cleanField(f.title, 200) }),
+    t(locale, 'msgWhy', { description: cleanField(f.description) }),
+    t(locale, 'msgSuggest', { suggestion: cleanField(f.suggestion) }),
+  ].join('\n');
+}
+
+export function buildFixMessage(f = {}, locale = DEFAULT_LOCALE) {
+  const text = [t(locale, 'fixHeader'), messageFields(f, locale), t(locale, 'fixFooter')].join('\n');
   return text.length > TERMINAL_TEXT_MAX ? text.slice(0, TERMINAL_TEXT_MAX) : text;
 }
 
-export function buildIssueMessage(f = {}) {
-  const text =
-    '【VibeGuard 安全警告 — 請開 GitHub issue 記錄，先不要修】\n' +
-    `檔案：${cleanField(f.target, 300)}:${Number.isInteger(f.line) ? f.line : '?'}\n` +
-    `問題：${cleanField(f.title, 200)}\n` +
-    `為什麼危險：${cleanField(f.description)}\n` +
-    `建議修法：${cleanField(f.suggestion)}\n` +
-    '請用 gh issue create 在本 repo 開一個 issue 記錄（標題前綴 [VibeGuard]），' +
-    '內文最後一定要加這行機器標記：\n' +
-    `vibeguard-key:${cleanField(f.rule, 100)} ${cleanField(f.target, 300)}\n` +
-    '開完回報 issue 編號即可，不要動程式碼。';
+export function buildIssueMessage(f = {}, locale = DEFAULT_LOCALE) {
+  // 機器標記行（issueKeyLine）格式各語系一致：refreshIssues 靠 `vibeguard-key:<rule> <target>` 對 issue
+  const text = [
+    t(locale, 'issueHeader'),
+    messageFields(f, locale),
+    t(locale, 'issueBody'),
+    t(locale, 'issueKeyLine', { rule: cleanField(f.rule, 100), target: cleanField(f.target, 300) }),
+    t(locale, 'issueFooter'),
+  ].join('\n');
   return text.length > TERMINAL_TEXT_MAX ? text.slice(0, TERMINAL_TEXT_MAX) : text;
 }
 
@@ -151,6 +157,21 @@ export default async function activate(orca, deps = {}) {
     const tok = (await readFile(llmTokenFile).catch(() => null))?.trim() || null;
     return { framework: m?.[1] ?? 'claude', model: m?.[2] ?? null, oauthToken: tok };
   }
+  // 語言：.locale 檔（'auto' 或 i18n.mjs 的語系 id；面板/dashboard 的語言選單寫入）+ 系統語言。
+  // worker 端用在：桌面通知、送給 agent 的修復/開 issue 訊息、掃描記錄與 doAction 回覆的 note。
+  // 面板自己有 navigator.language，這裡的 resolvedLocale 只是它的次順位參考。
+  const localeStateFile = fileURLToPath(new URL('./.locale', import.meta.url));
+  const systemLocale = deps.systemLocale ?? detectSystemLocale();
+  let currentLocale = resolveLocale('auto', systemLocale); // 最近一次讀到的解析結果（同步路徑如 logScan 用）
+  async function localeSettings() {
+    const raw = (await readFile(localeStateFile).catch(() => null))?.trim() || 'auto';
+    const locale = LOCALES[raw] ? raw : 'auto';
+    currentLocale = resolveLocale(locale, systemLocale);
+    return { locale, resolvedLocale: currentLocale };
+  }
+  await localeSettings();
+  // 掃描記錄 / doAction 回覆的 note：帶 key+params 讓面板用自己的語言翻；note 文字給舊面板相容
+  const note = (key, params) => ({ noteKey: key, noteParams: params ?? {}, note: t(currentLocale, key, params) });
   const realLlmScan = deps.llmScan ?? (async (input) => {
     const { framework, model, oauthToken } = await llmSettings();
     const runner = deps.defaultRunner ?? defaultRunner;
@@ -166,12 +187,10 @@ export default async function activate(orca, deps = {}) {
         if (!oauthToken && framework === 'claude' && /authenticat|oauth|api key/i.test(String(err?.message ?? ''))) {
           err = new Error(`${err.message}（根治：終端跑 claude setup-token，把 token 存到插件目錄的 .llm-token）`);
         }
-        const lastErr = err;
         orca.log?.(`LLM 框架 ${framework} 失敗：${err?.message ?? err}`);
-        throw lastErr;
+        throw err; // 讓 scanner 記 LLM_FAILED + llmError
       }
     }
-    throw lastErr; // 全部失敗才讓 scanner 記 LLM_FAILED
   });
   // 佇列滿載保護：agent 高頻寫檔時 LLM 佇列會堆積到幾分鐘（單次上限 120s × 深度）。
   // 「在跑 2 + 排隊 2」滿了就跳過本次 LLM——L1/L2 即時結果照出，LLM 靠下一次變動補掃。
@@ -208,9 +227,9 @@ export default async function activate(orca, deps = {}) {
     const byAgent = memory[worktreeId] ?? {};
     const prev = byAgent[agent] ?? [];
     // 同一筆（rule+target+line）重掃保留首次發現時間——foundAt 不跳動，面板才不會看起來一直變
-    const prevFoundAt = new Map(prev.map((f) => [resolvedKey(f), f.foundAt]));
+    const prevFoundAt = new Map(prev.map((f) => [identityOf(f), f.foundAt]));
     for (const f of findings) {
-      const old = prevFoundAt.get(resolvedKey(f));
+      const old = prevFoundAt.get(identityOf(f));
       if (old) f.foundAt = old;
     }
     const targets = new Set(findings.map((f) => f.target));
@@ -246,17 +265,40 @@ export default async function activate(orca, deps = {}) {
   }
 
   // 掃描記錄（最近 50 筆，新的在前）——讓使用者能驗證「每次修改都有掃」
+  // 持久化到 storage：worker 是 lazy 啟動又會被 reap，純記憶體版一 toggle 插件就整段歸零，
+  // 使用者剛看到的那筆掃描記錄會憑空消失（實測抱怨「沒回來呀」）。
   const scanLog = [];
+  {
+    const got = await orca.host.call(HOST.STORAGE_GET, { key: 'scanLog' }).catch(() => null);
+    if (Array.isArray(got?.value)) scanLog.push(...got.value.slice(0, 50));
+  }
+  let scanLogSaving = null; // microtask 合併：啟動時 12 個 worktree 的 watch 記錄只寫一次
   function logScan(entry) {
     scanLog.unshift({ time: new Date().toISOString(), ...entry });
     if (scanLog.length > 50) scanLog.pop();
+    if (!scanLogSaving) {
+      scanLogSaving = Promise.resolve().then(() => {
+        scanLogSaving = null;
+        return orca.host.call(HOST.STORAGE_SET, { key: 'scanLog', value: [...scanLog] }).catch(() => {});
+      });
+    }
   }
 
   // 已修正清單（重掃後消失的 finding 視為已修正，cap 100；持久化到 storage）
   const resolved = [];
   {
     const got = await orca.host.call(HOST.STORAGE_GET, { key: 'resolvedFindings' }).catch(() => null);
-    if (Array.isArray(got?.value)) resolved.push(...got.value);
+    // 去重：換版前的資料按 rule+target+行號 記錄，同一個問題每被推移一次就多一筆幽靈，
+    // 100 筆上限會被洗掉真正修好的紀錄。新→舊掃過去，同身分只留最新那筆。
+    if (Array.isArray(got?.value)) {
+      const seen = new Set();
+      for (const r of got.value) {
+        const k = identityOf(r);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        resolved.push(r);
+      }
+    }
   }
   const resolvedKey = (f) => `${f.rule} ${f.target} ${f.line}`;
 
@@ -269,13 +311,14 @@ export default async function activate(orca, deps = {}) {
       }
     }
     if (!prev.length) return;
-    const stillThere = new Set(newFindings.map(resolvedKey));
+    // 用內容身分比對，不用行號：上方插行造成的整體位移不是「修好了」
+    const stillThere = new Set(newFindings.map(identityOf));
     const now = new Date().toISOString();
     let changed = false;
     for (const f of prev) {
-      if (stillThere.has(resolvedKey(f))) continue;
-      const key = resolvedKey(f);
-      const existing = resolved.findIndex((r) => resolvedKey(r) === key);
+      if (stillThere.has(identityOf(f))) continue;
+      const key = identityOf(f);
+      const existing = resolved.findIndex((r) => identityOf(r) === key);
       const entry = { ...f, resolvedAt: now };
       if (existing >= 0) resolved[existing] = entry; else resolved.unshift(entry);
       changed = true;
@@ -313,7 +356,6 @@ export default async function activate(orca, deps = {}) {
   // Issue 追蹤：issue body 裡的機器標記 `vibeguard-key:<rule>:<target>`（panel 的
   // buildIssueMessage 會帶上）。worker 用 gh 查各 repo 的 [VibeGuard] issue，
   // 對上標記 → panel 列上顯示 🔗 #N 待修 / ✔ #N 已完成。
-  const issueKey = (f) => `${f.rule} ${f.target}`;
   const gh = deps.gh ?? {
     // repo 根 → owner/name（git remote 或 gh 都行，這裡用 gh 統一）
     repoSlug: async (root) => {
@@ -369,8 +411,10 @@ export default async function activate(orca, deps = {}) {
     const settings = {
       ...(await notifySettings()),
       ...(await llmScanSettings()),
+      ...(await localeSettings()),
       stateFile: notifyStateFile,
       llmScanStateFile,
+      localeStateFile,
       dashboardUrl,
       llm: { ...(await llmSettings()), stateFile: llmStateFile },
     };
@@ -394,10 +438,10 @@ export default async function activate(orca, deps = {}) {
     for (const [wt, byAgent] of Object.entries(data.groups ?? {})) {
       g[wt] = {};
       for (const [ag, list] of Object.entries(byAgent ?? {})) {
-        g[wt][ag] = (Array.isArray(list) ? list : []).map((f) => `${f.rule}|${f.target}|${f.line}|${f.severity}`).sort();
+        g[wt][ag] = (Array.isArray(list) ? list : []).map((f) => `${identityOf(f)}|${f.severity}`).sort();
       }
     }
-    const r = (data.resolved ?? []).map((x) => `${x.rule}|${x.target}|${x.line}`);
+    const r = (data.resolved ?? []).map((x) => identityOf(x));
     return JSON.stringify([g, r, data.issues ?? {}, data.settings ?? {}]);
   }
   async function bakeNow() {
@@ -511,18 +555,18 @@ export default async function activate(orca, deps = {}) {
         let total = 0;
         for (const root of roots) {
           const files = await listFilesRecursive(root);
-          logScan({ kind: 'watch', path: root, worktreeId: root, note: `全專案掃描開始：${files.length} 檔` });
+          logScan({ kind: 'watch', path: root, worktreeId: root, ...note('noteScanAllStart', { n: files.length }) });
           for (const f of files) {
             await scanAndReport(f, root).catch(() => {});
             total += 1;
           }
-          logScan({ kind: 'watch', path: root, worktreeId: root, note: '全專案掃描完成' });
+          logScan({ kind: 'watch', path: root, worktreeId: root, ...note('noteScanAllDone') });
         }
         orca.log?.(`全專案掃描完成：共 ${total} 檔`);
         await refreshPanel().catch(() => {});
       } finally { scanAllRunning = false; }
     })().catch((err) => orca.log?.(`全專案掃描失敗：${err?.message ?? err}`));
-    return { ok: true, note: '背景掃描已開始（進度看掃描記錄）' };
+    return { ok: true, ...note('noteScanAllBg') };
   }
 
   async function scanAndReport(path, worktreeId) {
@@ -565,10 +609,13 @@ export default async function activate(orca, deps = {}) {
       const findings = rel && learnedAll.length
         ? notIgnored.filter((f) => !isLearned(f, learnedAll, rel))
         : notIgnored;
-      logScan({ kind: 'scan', path, worktreeId, count: findings.length, layers, elapsedMs, ...(llmError ? { llmError } : {}) });
+      // 分嚴重度記錄：面板燈號要能反映「這次掃到的是嚴重還是注意」——
+      // 只看 count 一律亮紅燈，會讓人跑去「嚴重」區白找（實際全在「注意」折疊區裡）
+      const sev = {};
+      for (const f of findings) if (f.severity) sev[f.severity] = (sev[f.severity] ?? 0) + 1;
+      logScan({ kind: 'scan', path, worktreeId, count: findings.length, sev, layers, elapsedMs, ...(llmError ? { llmError } : {}) });
       orca.log?.(`掃描 ${path}：${findings.length} 個問題（${layers.join('+')}，${elapsedMs}ms）`);
       const agent = agentFor(worktreeId);
-      await markResolved(path, findings); // 先記已修正（讀 merge 前的 memory）
       if (findings.length) {
         const foundAt = new Date().toISOString();
         for (const f of findings) {
@@ -585,17 +632,22 @@ export default async function activate(orca, deps = {}) {
             f.snippet = seg.map((t, i) => ({ ln: from + i, text: t.slice(0, 200) }));
           }
         }
+        assignIdentities(findings); // 身分要在 snippet 之後算（指紋看命中行的內容）
+      }
+      await markResolved(path, findings); // 記已修正（讀 merge 前的 memory；身分已就緒）
+      if (findings.length) {
         // 只通知「還沒通知過的 critical/high」，且全域 2 分鐘最多一次
-        const newSerious = findings.filter((f) => !notifiedKeys.has(resolvedKey(f)) && (f.severity === 'critical' || f.severity === 'high'));
+        const newSerious = findings.filter((f) => !notifiedKeys.has(identityOf(f)) && (f.severity === 'critical' || f.severity === 'high'));
         const nst = await notifySettings();
         if (newSerious.length && now() - lastNotifyAt >= NOTIFY_COOLDOWN_MS && nst.notify) {
           lastNotifyAt = now();
-          for (const f of newSerious) notifiedKeys.add(resolvedKey(f));
+          for (const f of newSerious) notifiedKeys.add(identityOf(f));
           const crit = newSerious.filter((f) => f.severity === 'critical').length;
           const name = String(path).split(/[\\/]/).pop();
+          const { resolvedLocale } = await localeSettings();
           await orca.host.call(HOST.NOTIFY, {
-            title: NOTIFY_TITLE.slice(0, 120),
-            body: `${name}：新增 ${crit} 個致命 / ${newSerious.length} 個嚴重問題`.slice(0, 1000),
+            title: t(resolvedLocale, 'notifyTitle').slice(0, 120),
+            body: t(resolvedLocale, 'notifyBody', { name, crit, total: newSerious.length }).slice(0, 1000),
           }).catch(() => {});
         }
       }
@@ -608,7 +660,7 @@ export default async function activate(orca, deps = {}) {
       // 暫存檔在 watch 事件到讀檔之間被刪（agent 狀態檔常見）——記「跳過」而非錯誤
       const isGone = err?.code === 'ENOENT' || String(err?.message ?? '').includes('ENOENT');
       logScan(isGone
-        ? { kind: 'skip', path, worktreeId, note: '跳過（檔案已消失）' }
+        ? { kind: 'skip', path, worktreeId, ...note('noteSkipGone') }
         : { kind: 'scan', path, worktreeId, error: String(err?.message ?? err) });
       if (isGone) {
         // 檔案不存在 = 問題不存在：比照「乾淨重掃」清掉該檔舊 findings（進已修正），
@@ -660,7 +712,7 @@ export default async function activate(orca, deps = {}) {
       }
       await orca.host.call(HOST.STORAGE_SET, { key: 'findings', value: memory }).catch(() => {});
       await orca.host.call(HOST.STORAGE_SET, { key: 'resolvedFindings', value: resolved }).catch(() => {});
-      logScan({ kind: 'skip', path: ignorePath, worktreeId, note: `忽略規則更新：移除 ${removed} 筆` });
+      logScan({ kind: 'skip', path: ignorePath, worktreeId, ...note('noteIgnoreApplied', { n: removed }) });
       await refreshPanel();
     } catch (err) {
       orca.log?.(`套用忽略規則失敗：${err?.message ?? err}`);
@@ -700,13 +752,13 @@ export default async function activate(orca, deps = {}) {
   orca.events.on('worktree.created', (p) => {
     if (p?.worktreeId && p?.path) {
       watcher.addWorktree(p.worktreeId, p.path);
-      logScan({ kind: 'watch', path: p.path, worktreeId: p.worktreeId, note: '開始監聽' });
+      logScan({ kind: 'watch', path: p.path, worktreeId: p.worktreeId, ...note('noteWatchStart') });
     }
   });
   orca.events.on('worktree.removed', (p) => {
     if (p?.worktreeId) {
       watcher.removeWorktree(p.worktreeId);
-      logScan({ kind: 'unwatch', path: p.path ?? '', worktreeId: p.worktreeId, note: '停止監聽' });
+      logScan({ kind: 'unwatch', path: p.path ?? '', worktreeId: p.worktreeId, ...note('noteUnwatch') });
     }
   });
   await orca.host.call(HOST.EVENTS_SUBSCRIBE, { events: ['worktree.created', 'worktree.removed', 'agent.status.changed'] }).catch(() => {});
@@ -766,8 +818,9 @@ export default async function activate(orca, deps = {}) {
     const ctx = await orca.host.call(HOST.READ_CONTEXT, {});
     const terminalId = ctx?.terminals?.[0]?.id;
     if (!terminalId) return { ok: false, reason: 'no-terminal' };
+    const { resolvedLocale } = await localeSettings();
     // 安全：focused terminal 可能是 shell → 不自動 Enter，讓使用者確認後再送出
-    await orca.host.call(HOST.TERMINAL_SEND, { terminalId, text: buildFixMessage(stored), enter: false });
+    await orca.host.call(HOST.TERMINAL_SEND, { terminalId, text: buildFixMessage(stored, resolvedLocale), enter: false });
     return { ok: true };
   }
 
@@ -791,7 +844,7 @@ export default async function activate(orca, deps = {}) {
     // 順手把該檔所屬 repo 根加進 watcher（lazy 啟動前的舊 worktree 不會有事件）
     if (!watcher.worktreeIds().includes(args.worktreeId ?? root)) {
       watcher.addWorktree(args.worktreeId ?? root, root);
-      logScan({ kind: 'watch', path: root, worktreeId: args.worktreeId ?? root, note: '開始監聽（scanFile 觸發）' });
+      logScan({ kind: 'watch', path: root, worktreeId: args.worktreeId ?? root, ...note('noteWatchStartScanFile') });
     }
     return scanAndReport(args.path, args.worktreeId ?? 'manual');
   });
@@ -836,6 +889,15 @@ export default async function activate(orca, deps = {}) {
       await refreshPanel();
       return { ok: true };
     }
+    if (kind === 'locale') {
+      // 只收 'auto' 或 i18n.mjs 有的語系 id（值會落檔，不能讓任意字串進來）
+      const v = String(body.value ?? 'auto').trim();
+      if (v !== 'auto' && !LOCALES[v]) return { ok: false, reason: 'unknown-locale' };
+      await writeFile(localeStateFile, v);
+      await localeSettings();
+      await refreshPanel();
+      return { ok: true };
+    }
     if (kind === 'llm') {
       const fw = String(body.framework ?? 'claude');
       if (!LLM_FRAMEWORKS.includes(fw)) return { ok: false, reason: 'unknown-framework' };
@@ -848,7 +910,7 @@ export default async function activate(orca, deps = {}) {
       // 2026-08-31 教訓：worker 自己 exit 會被 host 記進 maxRestarts=3 的失敗額度，
       // 額度用完插件整個標 errored、所有事件被丟（實際發生，只有設定頁 toggle 能救）。
       // 所以這裡絕不 exit——誠實告訴使用者唯一安全的重啟方式。
-      return { ok: false, reason: 'needs-toggle', note: '安全重啟只有一種：Settings → Plugins 關掉 VibeGuard → 等 10 秒 → 開（這也是唯一會重置錯誤計數的方式）' };
+      return { ok: false, reason: 'needs-toggle', ...note('noteNeedsToggle') };
     }
     const stored = findStored(body);
     if (!stored) {
@@ -887,19 +949,20 @@ export default async function activate(orca, deps = {}) {
       return { ok: true };
     }
     if (kind === 'fix' || kind === 'issue') {
-      const message = kind === 'fix' ? buildFixMessage(stored) : buildIssueMessage(stored);
+      const { resolvedLocale } = await localeSettings();
+      const message = kind === 'fix' ? buildFixMessage(stored, resolvedLocale) : buildIssueMessage(stored, resolvedLocale);
       // 跨 worktree 只能走 CLI（host.call 限 focused worktree）；agentSure 才自動 Enter
-      const t = await listTerminalsFor(stored.worktreeId).catch(() => null);
-      if (t?.agent) {
-        const args = ['terminal', 'send', '--terminal', t.agent, '--text', message];
-        if (t.agentSure !== false) args.push('--enter');
+      const term = await listTerminalsFor(stored.worktreeId).catch(() => null);
+      if (term?.agent) {
+        const args = ['terminal', 'send', '--terminal', term.agent, '--text', message];
+        if (term.agentSure !== false) args.push('--enter');
         await runOrcaCli(args);
-        return t.agentSure === false
-          ? { ok: true, note: '終端身分不確定：已放入輸入框，請確認後自行送出' }
+        return term.agentSure === false
+          ? { ok: true, ...note('noteAgentUnsure') }
           : { ok: true };
       }
       // 不落回 focused terminal：focused 可能是別的專案的 agent（實際發生：A 專案的修法打進 B 專案的 agent）
-      return { ok: false, reason: 'no-agent-terminal', note: '該 worktree 沒有可辨識的 agent 終端——先在那個專案開一個 agent' };
+      return { ok: false, reason: 'no-agent-terminal', ...note('noteNoAgentTerminal') };
     }
     return { ok: false, reason: 'unknown-action' };
   });
@@ -935,7 +998,7 @@ export default async function activate(orca, deps = {}) {
       for (const p of paths) {
         if (watcher.worktreeIds().includes(p)) continue;
         watcher.addWorktree(p, p);
-        logScan({ kind: 'watch', path: p, worktreeId: p, note: '開始監聽（既有 worktree）' });
+        logScan({ kind: 'watch', path: p, worktreeId: p, ...note('noteWatchStartExisting') });
       }
       await refreshPanel(); // 無論有無補到都重寫（磁碟上的 panel 可能是舊模板/舊資料）
     } catch (err) {

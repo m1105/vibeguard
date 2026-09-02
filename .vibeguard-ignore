@@ -1,0 +1,4 @@
+# VibeGuard 掃描本專案自己時的忽略清單（dogfooding）。
+# 格式：rule_id [相對路徑[:行]]；# 開頭為註解。詳見 README「.vibeguard-ignore」。
+# l2-sast.mjs 裡 document.write 規則的 regex 原文會命中它自己——這是規則定義，不是漏洞。
+sast_xss_document_write shield/l2-sast.mjs

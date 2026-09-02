@@ -1,11 +1,19 @@
 {
   "name": "vibeguard-orca",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "AI 生成代碼即時安全守護 Orca 插件：L1 本地快篩 + L2/L3 Claude 語意審查。",
+  "description": "VibeGuard for Orca — real-time security screening for AI-generated code (Orca plugin). Local L1/L2 regex + optional LLM semantic review. Advisory tool: expect false positives.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/m1105/vibeguard-orca.git" },
+  "homepage": "https://github.com/m1105/vibeguard-orca#readme",
+  "bugs": { "url": "https://github.com/m1105/vibeguard-orca/issues" },
+  "keywords": ["orca", "orca-plugin", "security", "sast", "secrets", "ai-generated-code", "deepsec"],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "check:hygiene": "node --test test/repo-hygiene.test.mjs test/deploy.test.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "dev": "node scripts/dev-worker.mjs"
   },
   "engines": { "node": ">=20" }
 }

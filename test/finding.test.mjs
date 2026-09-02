@@ -150,3 +150,42 @@ test('uniqueFindings keeps distinct lines in original order', () => {
   const out = uniqueFindings([f1, f2, f3]);
   assert.deepEqual(out.map((f) => f.line), [2, 3, 1]);
 });
+
+// ── finding 身分（不含行號）──
+// agent 在檔案上方插幾行 → 全檔行號位移 → 含行號的身分會讓舊 finding 全被判「已修正」、
+// 新的全掛 NEW，連 meaningfulHash 都跟著變（面板一直重烤重掛，使用者捲不動）。
+test('identity：整體行號位移，身分不變（同內容 = 同一個問題）', async () => {
+  const { assignIdentities } = await import('../shield/finding.mjs');
+  const mk = (line, text) => ({
+    rule: 'insecure_config_acao_wildcard', target: '/repo/routes.ts', title: 'ACAO 萬用字元',
+    line, snippet: [{ ln: line - 1, text: 'a' }, { ln: line, text }, { ln: line + 1, text: 'b' }],
+  });
+  const before = assignIdentities([mk(175, "res.setHeader('ACAO', '*')"), mk(220, "cors({ origin: '*' })")]);
+  const after = assignIdentities([mk(180, "res.setHeader('ACAO', '*')"), mk(225, "cors({ origin: '*' })")]);
+  assert.equal(before[0].identity, after[0].identity, '行號 +5 不該產生新身分');
+  assert.equal(before[1].identity, after[1].identity);
+  assert.notEqual(before[0].identity, before[1].identity, '命中內容不同 → 不同身分');
+});
+
+test('identity：同檔同規則同內容多筆（ACAO x6）靠序號區分，位移後仍一一對應', async () => {
+  const { assignIdentities } = await import('../shield/finding.mjs');
+  const line = "  res.setHeader('Access-Control-Allow-Origin', '*');";
+  const mk = (n) => ({ rule: 'acao', target: '/r.ts', title: 'ACAO', line: n, snippet: [{ ln: n, text: line }] });
+  const before = assignIdentities([175, 220, 259].map(mk));
+  const after = assignIdentities([180, 225, 264].map(mk));
+  assert.deepEqual(before.map((f) => f.identity), after.map((f) => f.identity));
+  assert.equal(new Set(before.map((f) => f.identity)).size, 3, '同內容多筆要各自有身分，不能塌成一筆');
+});
+
+test('identity：沒有 snippet 時退回 evidence；兩者都沒有也要穩定不炸', async () => {
+  const { assignIdentities, identityOf } = await import('../shield/finding.mjs');
+  const a = { rule: 'r', target: '/f.ts', title: 't', line: 10, evidence: 'const x = 1' };
+  const b = { rule: 'r', target: '/f.ts', title: 't', line: 99, evidence: 'const x = 1' };
+  assignIdentities([a]); assignIdentities([b]);
+  assert.equal(a.identity, b.identity, 'evidence 相同 → 同身分');
+  const bare = { rule: 'r', target: '/f.ts', title: 't', line: 3 };
+  assert.equal(typeof identityOf(bare), 'string');
+  assert.ok(identityOf(bare).length > 0);
+  // identityOf 對已標記的沿用既有值（舊資料沒有就現算）
+  assert.equal(identityOf(a), a.identity);
+});

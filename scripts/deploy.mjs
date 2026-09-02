@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const DEST = join(homedir(), 'orca', 'plugins-deploy', 'vibeguard-orca');
-const INCLUDE = ['orca-plugin.json', 'package.json', 'main.mjs', 'panel-renderer.mjs', 'panel-server.mjs', 'dashboard.mjs', 'shield', 'seeds'];
+const INCLUDE = ['orca-plugin.json', 'package.json', 'main.mjs', 'i18n.mjs', 'panel-renderer.mjs', 'panel-server.mjs', 'dashboard.mjs', 'shield', 'seeds'];
 
 // 就地覆寫、不砍目錄：devPluginPaths 指著這裡（方案 C），目錄消失會讓 dev 插件短暫失蹤
 await mkdir(DEST, { recursive: true });

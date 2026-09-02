@@ -26,9 +26,9 @@ test('密鑰 + 敏感賦值各算一次', () => {
 });
 
 test('database URL 整段替換', () => {
-  const { text, count } = redactForLlm('const db = "postgres://user:passw0rd@db.internal:5432/app";');
+  const { text, count } = redactForLlm('const db = "postgres://user:FAKEpassw0rd@db.example.com:5432/app";');
   assert.ok(!text.includes('passw0rd'));
-  assert.ok(!text.includes('db.internal'));
+  assert.ok(!text.includes('db.example.com'));
   assert.equal(count, 1);
 });
 

@@ -2,22 +2,27 @@
 //
 // 與 panel.html 的差別：panel 是 sandboxed iframe（CSP 禁 fetch，資料開啟當下內嵌）；
 // 這頁是 panel-server 供應的普通網頁，每 2 秒輪詢 /api/state → 真即時、不重刷頁面。
-// 動作（開檔/修復/開 Issue/忽略/設定）全走 POST /api/action，由 worker 端執行——
+// 動作（開檔/修復/開 Issue/忽略/設定/語言）全走 POST /api/action，由 worker 端執行——
 // 不再借道 terminal 打 shell 指令，比 panel 的 bridge 更直接。
+//
+// i18n：與 panel 同一份字典（i18n.mjs）整包內嵌；偏好 localStorage vgd.lang → worker .locale → navigator.language。
 //
 // 紀律（與 panel-renderer 相同）：本檔 script 區在 template literal 裡，
 // 一律避免 regex（反斜線會被吃掉）；換行字串寫 '\\n'。驗收：測試抽 <script> 做 new Function。
 
+import { localePack } from './i18n.mjs';
+import { safeInlineJson } from './panel-renderer.mjs';
+
 export function buildDashboardHtml() {
-  return TEMPLATE;
+  return TEMPLATE_HEAD + safeInlineJson(localePack()) + TEMPLATE_TAIL;
 }
 
-const TEMPLATE = `<!doctype html>
+const TEMPLATE_HEAD = `<!doctype html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VibeGuard 即時</title>
+<title>VibeGuard</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -147,10 +152,10 @@ const TEMPLATE = `<!doctype html>
 </head>
 <body>
 <header class="topbar"><div class="in">
-  <span class="dot" id="live-dot" title="連線狀態"></span>
+  <span class="dot" id="live-dot" data-i18n-title="liveDotTitle" title="連線狀態"></span>
   <svg width="18" height="18" viewBox="0 0 24 24" style="color: var(--accent); flex: none" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="m8.6 12.2 2.3 2.4 4.5-4.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
   <h1>VibeGuard</h1>
-  <span class="sub">即時安全總覽</span>
+  <span class="sub" data-i18n="dashSubtitle">即時安全總覽</span>
   <span id="unread"></span>
 </div></header>
 <div class="wrap">
@@ -158,21 +163,21 @@ const TEMPLATE = `<!doctype html>
 <div id="summary"></div>
 <div id="meta"></div>
 <div class="chips" id="chips">
-  <button class="chip active" data-f="all" type="button">全部</button>
-  <button class="chip" data-f="serious" type="button">僅嚴重</button>
-  <button class="chip" data-f="normal" type="button">僅注意</button>
+  <button class="chip active" data-f="all" type="button" data-i18n="chipAll">全部</button>
+  <button class="chip" data-f="serious" type="button" data-i18n="chipSerious">僅嚴重</button>
+  <button class="chip" data-f="normal" type="button" data-i18n="chipNormal">僅注意</button>
   <span class="gap"></span>
-  <button class="chip" id="mark-all-read" type="button">✓ 全部已讀</button>
+  <button class="chip" id="mark-all-read" type="button" data-i18n="markAllRead">✓ 全部已讀</button>
 </div>
 <details class="card" id="settings-card">
-  <summary>⚙️ 設定<span class="sum-hint">通知・L3 LLM</span></summary>
+  <summary><span data-i18n="settings">⚙️ 設定</span><span class="sum-hint" data-i18n="dashSettingsHint">通知・L3 LLM・語言</span></summary>
   <div class="body">
-    <div class="setting-row" title="嚴重問題的桌面通知；關掉後照樣掃、照樣記錄，只是不跳通知">
-      <span>🔔 啟用通知</span>
+    <div class="setting-row" data-i18n-title="notifyToggleTitle" title="嚴重問題的桌面通知；關掉後照樣掃、照樣記錄，只是不跳通知">
+      <span data-i18n="notifyToggle">🔔 啟用通知</span>
       <label class="switch"><input type="checkbox" id="notify-toggle"><span class="slider"></span></label>
     </div>
-    <div class="setting-row" title="背景掃描用的 LLM（便宜模型即可）；失敗自動換下一框架">
-      <span>🧠 L3 語意審查</span>
+    <div class="setting-row" data-i18n-title="llmPickerTitle" title="背景掃描用的 LLM（便宜模型即可）">
+      <span data-i18n="llmPicker">🧠 L3 語意審查</span>
       <span class="llm-picker">
         <span class="vg-select-wrap"><select id="llm-framework" class="vg-select">
           <option value="claude">claude</option>
@@ -182,19 +187,26 @@ const TEMPLATE = `<!doctype html>
         <span class="vg-select-wrap"><select id="llm-model" class="vg-select"></select></span>
       </span>
     </div>
+    <div class="setting-row" data-i18n-title="langTitle" title="介面語言；「自動」跟隨系統語言">
+      <span data-i18n="langLabel">🌐 語言</span>
+      <span class="vg-select-wrap"><select id="lang-select" class="vg-select"></select></span>
+    </div>
   </div>
 </details>
 <div id="main"></div>
 <div id="empty-state" hidden>
   <svg width="44" height="44" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path><path d="m8.6 12.2 2.3 2.4 4.5-4.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
-  <div class="t">目前沒有發現問題</div>
-  <div class="s">即時監控中——有檔案變動就會自動掃描並更新這頁</div>
+  <div class="t" data-i18n="emptyTitle">目前沒有發現問題</div>
+  <div class="s" data-i18n="dashEmptySub">即時監控中——有檔案變動就會自動掃描並更新這頁</div>
 </div>
 <div id="resolved"></div>
 <div id="scanlog"></div>
 </div>
 <script>
 'use strict';
+const I18N = `;
+
+const TEMPLATE_TAIL = `;
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
 const SERIOUS = ['critical', 'high'];
 let DATA = { groups: {}, scans: [], resolved: [] };
@@ -205,7 +217,73 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
 };
-function keyOf(f) { return (f.rule || '') + ' ' + (f.target || '') + ':' + (f.line == null ? '?' : f.line); }
+
+// ── i18n（與 panel-renderer / i18n.mjs 同邏輯，不用 regex）──
+function resolveLang(pref, sys) {
+  const p = String(pref == null ? '' : pref).trim().toLowerCase();
+  for (const id of Object.keys(I18N.locales)) if (id.toLowerCase() === p) return id;
+  const s = String(sys == null ? '' : sys).trim().split('_').join('-').toLowerCase();
+  if (!s) return I18N.fallback;
+  const parts = s.split('-');
+  const lang = parts[0];
+  if (lang === 'zh') {
+    const trad = parts.indexOf('hant') !== -1 || parts.indexOf('tw') !== -1 || parts.indexOf('hk') !== -1 || parts.indexOf('mo') !== -1;
+    return trad ? 'zh-TW' : 'zh-CN';
+  }
+  if (lang === 'ja') return 'ja';
+  if (lang === 'en') return 'en';
+  return I18N.fallback;
+}
+function langPref() {
+  const saved = LS.get('vgd.lang', null);
+  if (saved) return saved;
+  const fromWorker = DATA.settings && DATA.settings.locale;
+  return fromWorker || 'auto';
+}
+let LANG = resolveLang(langPref(), navigator.language || '');
+function t(key, params) {
+  const dict = I18N.locales[LANG] || I18N.locales[I18N.default];
+  const base = I18N.locales[I18N.default];
+  const tpl = (dict && dict[key] != null) ? dict[key] : ((base && base[key] != null) ? base[key] : key);
+  if (!params) return tpl;
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const a = tpl.indexOf('{', i);
+    if (a === -1) { out += tpl.slice(i); break; }
+    const b = tpl.indexOf('}', a + 1);
+    if (b === -1) { out += tpl.slice(i); break; }
+    const name = tpl.slice(a + 1, b);
+    if (Object.prototype.hasOwnProperty.call(params, name)) out += tpl.slice(i, a) + String(params[name] == null ? '' : params[name]);
+    else out += tpl.slice(i, b + 1);
+    i = b + 1;
+  }
+  return out;
+}
+function paren(x) { return t('paren', { x: x }); }
+function applyI18n() {
+  document.documentElement.lang = LANG;
+  document.title = t('dashTitle');
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.getAttribute('data-i18n'));
+  for (const el of document.querySelectorAll('[data-i18n-title]')) el.title = t(el.getAttribute('data-i18n-title'));
+  const sel = document.getElementById('lang-select');
+  if (sel && document.activeElement !== sel) {
+    const pref = langPref();
+    sel.textContent = '';
+    const auto = document.createElement('option');
+    auto.value = 'auto';
+    auto.textContent = t('langAuto', { name: I18N.names[resolveLang('auto', navigator.language || '')] });
+    sel.appendChild(auto);
+    for (const id of Object.keys(I18N.locales)) {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = I18N.names[id] || id;
+      sel.appendChild(o);
+    }
+    sel.value = I18N.locales[pref] ? pref : 'auto';
+  }
+}
+
+function keyOf(f) { return f.identity || ((f.rule || '') + ' ' + (f.target || '') + ':' + (f.line == null ? '?' : f.line)); }
 const readSet = LS.get('vgd.read', {});
 const openState = LS.get('vgd.open', {});
 function persistDetails(det, key, defaultOpen) {
@@ -218,7 +296,7 @@ function updateUnread() {
   for (const agents of Object.values(DATA.groups || {})) {
     for (const fs2 of Object.values(agents || {})) for (const f of fs2) if (!readSet[keyOf(f)]) n += 1;
   }
-  document.getElementById('unread').textContent = n > 0 ? n + ' 未讀' : '';
+  document.getElementById('unread').textContent = n > 0 ? t('unread', { n: n }) : '';
 }
 function markRead(k, badge) {
   if (!readSet[k]) { readSet[k] = true; LS.set('vgd.read', readSet); }
@@ -237,9 +315,15 @@ async function api(kind, extra) {
   return res.json();
 }
 function findingRef(f) { return { rule: f.rule, target: f.target, line: f.line }; }
+// worker 的回覆若帶 noteKey 就用本頁語言翻，否則用它給的 note 文字
+function noteOf(r) {
+  if (r && r.noteKey) return t(r.noteKey, r.noteParams || {});
+  return r && r.note ? r.note : '';
+}
 function report(r, okMsg) {
-  if (r && r.ok) { setStatus(okMsg + (r.note ? '（' + r.note + '）' : '')); return; }
-  setStatus('失敗：' + ((r && (r.reason || r.error)) || '未知錯誤'));
+  if (r && r.ok) { const n = noteOf(r); setStatus(okMsg + (n ? paren(n) : '')); return; }
+  const n = noteOf(r);
+  setStatus(t('dashFailed', { reason: n || ((r && (r.reason || r.error)) || t('unknownError')) }));
 }
 
 // ── 渲染 ──
@@ -262,29 +346,30 @@ function findingRow(f) {
   if (!readSet[k]) {
     badge = document.createElement('span');
     badge.className = 'badge-new';
-    badge.textContent = 'NEW';
+    badge.textContent = t('badgeNew');
     title.appendChild(badge);
   }
   title.appendChild(document.createTextNode(f.title || f.rule));
   titleLine.appendChild(title);
   row.addEventListener('click', () => markRead(k, badge));
 
+  const shortTitle = f.title || f.rule;
   const btns = document.createElement('span');
   btns.className = 'btns';
-  btns.appendChild(mkBtn('📄 開檔', '在 Orca 編輯器開啟此檔（worker 直接執行，無跳行）', async () => {
-    report(await api('open', findingRef(f)), '已開啟：' + (f.target || ''));
+  btns.appendChild(mkBtn(t('btnOpen'), t('dashBtnOpenTitle'), async () => {
+    report(await api('open', findingRef(f)), t('dashOpened', { path: f.target || '' }));
   }));
-  btns.appendChild(mkBtn('🔧 修復', '把修法送到該 worktree 的 agent 終端', async () => {
-    report(await api('fix', findingRef(f)), '已送回 agent：' + (f.title || f.rule));
+  btns.appendChild(mkBtn(t('btnFix'), t('dashBtnFixTitle'), async () => {
+    report(await api('fix', findingRef(f)), t('dashFixSent', { title: shortTitle }));
   }));
-  btns.appendChild(mkBtn('📝 開 Issue', '請 agent 用 gh issue create 記錄，先不修', async () => {
-    report(await api('issue', findingRef(f)), '已請 agent 開 issue：' + (f.title || f.rule));
+  btns.appendChild(mkBtn(t('btnIssue'), t('dashBtnIssueTitle'), async () => {
+    report(await api('issue', findingRef(f)), t('dashIssueSent', { title: shortTitle }));
   }));
-  btns.appendChild(mkBtn('🚫 此檔免檢', '此檔不再檢查這項規則（worker 直接寫 .vibeguard-ignore）', async () => {
-    report(await api('ignore', findingRef(f)), '✅ 已寫入 .vibeguard-ignore（此檔免檢），數秒內生效');
+  btns.appendChild(mkBtn(t('btnIgnoreFile'), t('dashBtnIgnoreFileTitle'), async () => {
+    report(await api('ignore', findingRef(f)), t('dashIgnored'));
   }));
-  btns.appendChild(mkBtn('🙈 忽略這筆', '只忽略這一筆（worker 直接寫 .vibeguard-ignore）', async () => {
-    report(await api('dismiss', findingRef(f)), '✅ 已寫入 .vibeguard-ignore（忽略這筆），數秒內生效');
+  btns.appendChild(mkBtn(t('btnDismiss'), t('dashBtnDismissTitle'), async () => {
+    report(await api('dismiss', findingRef(f)), t('dashDismissed'));
   }));
   titleLine.appendChild(btns);
   row.appendChild(titleLine);
@@ -317,7 +402,7 @@ function findingRow(f) {
   if (issue) {
     const b2 = document.createElement('div');
     b2.className = 'loc';
-    b2.textContent = issue.state === 'CLOSED' ? '✔ issue #' + issue.number + ' 已完成' : '🔗 issue #' + issue.number + ' 已開（待修）';
+    b2.textContent = issue.state === 'CLOSED' ? t('issueClosed', { n: issue.number }) : t('issueOpen', { n: issue.number });
     row.appendChild(b2);
   }
   return row;
@@ -347,7 +432,7 @@ function renderSection(parent, title, cls, groups, defaultOpen) {
   if (!total) return 0;
   const h = document.createElement('div');
   h.className = 'sec ' + cls;
-  h.textContent = title + '（' + total + '）';
+  h.textContent = title + paren(total);
   parent.appendChild(h);
   for (const [wt, agents] of wts) {
     const all = [];
@@ -356,7 +441,7 @@ function renderSection(parent, title, cls, groups, defaultOpen) {
     const det = document.createElement('details');
     persistDetails(det, cls + '|' + wt, defaultOpen);
     const sum = document.createElement('summary');
-    sum.textContent = wt.split('::').pop() + '（' + all.length + '）';
+    sum.textContent = wt.split('::').pop() + paren(all.length);
     det.appendChild(sum);
     for (const f of all) det.appendChild(findingRow(f));
     parent.appendChild(det);
@@ -364,8 +449,26 @@ function renderSection(parent, title, cls, groups, defaultOpen) {
   return total;
 }
 
+function scanBadge(s) {
+  const sev = s.sev;
+  if (!sev) return { icon: (s.count > 0 ? '🔴' : '✅'), text: '' };
+  const ser = (sev.critical || 0) + (sev.high || 0);
+  const nrm = sev.medium || 0;
+  const lw = sev.low || 0;
+  const ps = [];
+  if (ser) ps.push(t('sevSerious', { n: ser }));
+  if (nrm) ps.push(t('sevNormal', { n: nrm }));
+  if (lw) ps.push(t('sevLow', { n: lw }));
+  return { icon: ser ? '🔴' : (nrm ? '🟠' : (lw ? '🟡' : '✅')), text: ps.join(' · ') };
+}
+function scanNote(s, fallbackKey) {
+  if (s.noteKey) return t(s.noteKey, s.noteParams || {});
+  return s.note || t(fallbackKey);
+}
+
 function render() {
   const scrollY = window.scrollY;
+  applyI18n();
   const el = document.getElementById('main');
   el.textContent = '';
   let total = 0;
@@ -375,15 +478,15 @@ function render() {
   const box = document.getElementById('summary');
   box.textContent = '';
   function kpi(n, label, cls) {
-    const t = document.createElement('div');
-    t.className = 'kpi ' + cls + (n === 0 ? ' zero' : '');
+    const tile = document.createElement('div');
+    tile.className = 'kpi ' + cls + (n === 0 ? ' zero' : '');
     const num = document.createElement('div'); num.className = 'n'; num.textContent = String(n);
     const lab = document.createElement('div'); lab.className = 'l'; lab.textContent = label;
-    t.appendChild(num); t.appendChild(lab); box.appendChild(t);
+    tile.appendChild(num); tile.appendChild(lab); box.appendChild(tile);
   }
-  kpi(countOf(serious), '嚴重', 'crit');
-  kpi(countOf(normal), '注意', 'warn');
-  kpi((DATA.resolved || []).length, '已修正', 'ok');
+  kpi(countOf(serious), t('serious'), 'crit');
+  kpi(countOf(normal), t('normal'), 'warn');
+  kpi((DATA.resolved || []).length, t('resolved'), 'ok');
   const scans = DATA.scans || [];
   const watchState = new Map();
   let lastScanAt = null;
@@ -393,17 +496,17 @@ function render() {
   }
   let watching = 0;
   for (const kind of watchState.values()) if (kind === 'watch') watching += 1;
-  const scanTxt = lastScanAt ? new Date(lastScanAt).toLocaleTimeString() : '尚無（有檔案變動才掃）';
-  document.getElementById('meta').textContent = '👁 監聽 ' + watching + ' 個 worktree · 最後掃描 ' + scanTxt;
+  const scanTxt = lastScanAt ? new Date(lastScanAt).toLocaleTimeString() : t('noScanYet');
+  document.getElementById('meta').textContent = t('watchMeta', { n: watching, time: scanTxt });
 
   document.getElementById('empty-state').hidden = total > 0;
   if (total) {
     const sWrap = document.createElement('div');
     sWrap.id = 'sec-serious';
-    renderSection(sWrap, '嚴重', 'serious', serious, true);
+    renderSection(sWrap, t('serious'), 'serious', serious, true);
     const nWrap = document.createElement('div');
     nWrap.id = 'sec-normal';
-    renderSection(nWrap, '注意', 'normal', normal, false);
+    renderSection(nWrap, t('normal'), 'normal', normal, true);
     el.appendChild(sWrap); el.appendChild(nWrap);
     applyFilter();
   }
@@ -416,15 +519,15 @@ function render() {
     const det = document.createElement('details');
     persistDetails(det, 'resolved', false);
     const sum = document.createElement('summary');
-    sum.textContent = '✅ 已修正（' + rl.length + '）';
+    sum.textContent = t('resolvedTitle') + paren(rl.length);
     det.appendChild(sum);
     for (const f of rl.slice(0, 20)) {
       const row = document.createElement('div');
       row.className = 'row low';
-      const t = document.createElement('div'); t.textContent = f.title || f.rule; row.appendChild(t);
+      const tt = document.createElement('div'); tt.textContent = f.title || f.rule; row.appendChild(tt);
       const loc = document.createElement('div');
       loc.className = 'loc';
-      loc.textContent = (f.resolvedAt ? new Date(f.resolvedAt).toLocaleTimeString() + ' 修正 · ' : '') + (f.target || '?') + ':' + (f.line == null ? '?' : f.line);
+      loc.textContent = (f.resolvedAt ? t('resolvedAtPrefix', { time: new Date(f.resolvedAt).toLocaleTimeString() }) : '') + (f.target || '?') + ':' + (f.line == null ? '?' : f.line);
       row.appendChild(loc);
       det.appendChild(row);
     }
@@ -438,18 +541,23 @@ function render() {
     const det = document.createElement('details');
     persistDetails(det, 'scanlog', false);
     const sum = document.createElement('summary');
-    sum.textContent = '📋 最近掃描記錄（' + scans.length + '）';
+    sum.textContent = t('scanLogTitle') + paren(scans.length);
     det.appendChild(sum);
     for (const sc of scans.slice(0, 15)) {
       const row = document.createElement('div');
       row.className = 'scan';
       const time = sc.time ? new Date(sc.time).toLocaleTimeString() : '?';
       let desc;
-      if (sc.kind === 'watch') desc = '👁 ' + (sc.note || '監聽') + '：' + (sc.path || '');
-      else if (sc.kind === 'unwatch') desc = '👁‍🗨 ' + (sc.note || '停止監聽') + '：' + (sc.path || sc.worktreeId || '');
-      else if (sc.kind === 'skip') desc = '⏭ ' + (sc.note || '跳過') + '：' + (sc.path || '');
-      else if (sc.error) desc = '⚠️ 掃描失敗：' + (sc.path || '?') + '（' + sc.error + '）';
-      else desc = (sc.count > 0 ? '🔴 ' : '✅ ') + (sc.path || '?') + ' · ' + (sc.count || 0) + ' 個問題 · ' + (sc.layers || []).join('+') + ' · ' + (sc.elapsedMs == null ? '?' : sc.elapsedMs) + 'ms';
+      if (sc.kind === 'watch') desc = t('scanWatch', { note: scanNote(sc, 'noteWatch'), path: sc.path || '' });
+      else if (sc.kind === 'unwatch') desc = t('scanUnwatch', { note: scanNote(sc, 'noteUnwatch'), path: sc.path || sc.worktreeId || '' });
+      else if (sc.kind === 'skip') desc = t('scanSkip', { note: scanNote(sc, 'noteSkip'), path: sc.path || '' });
+      else if (sc.error) desc = t('scanFailed', { path: sc.path || '?', error: sc.error });
+      else {
+        const b = scanBadge(sc);
+        desc = t('scanResult', { icon: b.icon, path: sc.path || '?', n: sc.count || 0, detail: b.text ? paren(b.text) : '', layers: (sc.layers || []).join('+'), ms: sc.elapsedMs == null ? '?' : sc.elapsedMs })
+          + (sc.llmError ? '\\n    ' + t('llmErrorLine', { error: String(sc.llmError).slice(0, 200) }) : '');
+      }
+      if (sc.llmError) row.style.whiteSpace = 'pre-line';
       row.textContent = time + ' ' + desc;
       det.appendChild(row);
     }
@@ -493,15 +601,18 @@ function syncSettings() {
   if (document.activeElement !== master) master.checked = st.notify !== false;
   const fw = document.getElementById('llm-framework');
   const model = document.getElementById('llm-model');
-  const MODELS = {
-    claude: [['', 'haiku（預設）'], ['haiku', 'haiku'], ['sonnet', 'sonnet'], ['opus', 'opus']],
-    codex: [['', 'CLI 預設'], ['gpt-5-codex', 'gpt-5-codex'], ['gpt-5', 'gpt-5'], ['codex-mini-latest', 'codex-mini-latest']],
-    gemini: [['', 'CLI 預設'], ['gemini-2.5-flash', 'gemini-2.5-flash'], ['gemini-2.5-pro', 'gemini-2.5-pro']],
-  };
+  function modelsFor(fwName) {
+    const lists = {
+      claude: [['', t('modelDefaultLabel', { model: 'haiku' })], ['haiku', 'haiku'], ['sonnet', 'sonnet'], ['opus', 'opus']],
+      codex: [['', t('cliDefault')], ['gpt-5-codex', 'gpt-5-codex'], ['gpt-5', 'gpt-5'], ['codex-mini-latest', 'codex-mini-latest']],
+      gemini: [['', t('cliDefault')], ['gemini-2.5-flash', 'gemini-2.5-flash'], ['gemini-2.5-pro', 'gemini-2.5-pro']],
+    };
+    return lists[fwName] || [['', t('cliDefault')]];
+  }
   const llm = st.llm || {};
   function rebuild(selected) {
     model.textContent = '';
-    for (const [val, label] of (MODELS[fw.value] || [['', 'CLI 預設']])) {
+    for (const [val, label] of modelsFor(fw.value)) {
       const o = document.createElement('option');
       o.value = val; o.textContent = label;
       model.appendChild(o);
@@ -516,13 +627,21 @@ function syncSettings() {
   if (!settingsBound) {
     settingsBound = true;
     master.addEventListener('change', async () => {
-      report(await api('notify', { value: master.checked ? 'on' : 'off' }), '✅ 通知設定已更新（即時生效）');
+      report(await api('notify', { value: master.checked ? 'on' : 'off' }), t('dashNotifyUpdated'));
     });
     const persistLlm = async () => {
-      report(await api('llm', { framework: fw.value, model: model.value }), '✅ L3 掃描改用：' + fw.value + (model.value ? ' / ' + model.value : '（CLI 預設模型）'));
+      report(await api('llm', { framework: fw.value, model: model.value }), t('dashLlmSwitched', { fw: fw.value, model: model.value ? ' / ' + model.value : t('modelDefaultParen') }));
     };
     fw.addEventListener('change', () => { rebuild(''); persistLlm(); });
     model.addEventListener('change', persistLlm);
+    const sel = document.getElementById('lang-select');
+    sel.addEventListener('change', async () => {
+      const v = sel.value;
+      LS.set('vgd.lang', v);
+      LANG = resolveLang(v, navigator.language || '');
+      render();
+      report(await api('locale', { value: v }), t('langChanged', { name: I18N.names[LANG] }));
+    });
   }
 }
 persistDetails(document.getElementById('settings-card'), 'settings', false);
@@ -540,17 +659,20 @@ async function tick() {
     if (text !== lastJson) {
       lastJson = text;
       DATA = JSON.parse(text);
+      // worker 端語言偏好只在使用者沒在本頁明確選過時才跟
+      if (!LS.get('vgd.lang', null)) LANG = resolveLang(langPref(), navigator.language || '');
       render();
-      setStatus('資料更新於 ' + new Date().toLocaleTimeString() + '（每 2 秒自動同步）');
+      setStatus(t('dashUpdated', { time: new Date().toLocaleTimeString() }));
     }
   } catch (e) {
     failStreak += 1;
     if (failStreak >= 3) {
       dot.className = 'dot dead';
-      setStatus('⚠️ 連不上 worker——它可能重啟了（token 會換），請從 VibeGuard 面板重新開啟 dashboard');
+      setStatus(t('dashDisconnected'));
     }
   }
 }
+applyI18n();
 tick();
 setInterval(tick, 2000);
 </script>

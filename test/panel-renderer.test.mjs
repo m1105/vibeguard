@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPanelHtml, safeInlineJson } from '../panel-renderer.mjs';
+import { t as tr, LOCALES, LOCALE_NAMES, DEFAULT_LOCALE, FALLBACK_LOCALE } from '../i18n.mjs';
 
 test('safeInlineJson: < 轉義防 </script> 逃逸', () => {
   const s = safeInlineJson({ x: '</script><script>alert(1)</script>' });
@@ -109,7 +110,7 @@ test('sendShellCommand：背景 shell 指令也優先 agent(!)（誤判 shell �
   const fnEnd = html.indexOf('function reportShellResult', fnIdx);
   const body = html.slice(fnIdx, fnEnd);
   assert.ok(body.includes("'!' + cmd"), 'sendShellCommand 要先試 agentSure 的 agent 終端');
-  assert.ok(body.indexOf("'!' + cmd") < body.lastIndexOf('t.shell'), 'agent(!) 在 shell 之前');
+  assert.ok(body.indexOf("'!' + cmd") < body.lastIndexOf('.shell'), 'agent(!) 在 shell 之前');
 });
 
 test('buildPanelHtml: 含開 Issue 待修按鈕與訊息', () => {
@@ -172,11 +173,12 @@ test('buildPanelHtml: 重啟按鈕常駐 + 掃描狀態列', () => {
   assert.ok(html.includes('最後掃描'), 'summary 要顯示最後掃描時間（回答「有沒有在掃」）');
 });
 
-test('buildPanelHtml: worker 心跳警示 + 重新啟用按鈕（touch 插件目錄觸發 dev watcher 重載）', () => {
+test('buildPanelHtml: worker 心跳警示 + 重新啟用按鈕（只指引 toggle，不做 exit 式重啟）', () => {
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
   assert.ok(html.includes('worker 疑似停止'));
   assert.ok(html.includes('重新啟用'));
-  assert.ok(html.includes('touch '), '用 touch main.mjs 觸發 dev watcher');
+  assert.ok(html.includes("t('restartHow')"), '重啟只能指引使用者 toggle（worker 自行 exit 會吃 host 的 maxRestarts 額度）');
+  assert.ok(!html.includes('process.exit'), '面板不得觸發 exit 式重啟');
   assert.ok(html.includes('generatedAt'), '心跳看 DATA.generatedAt');
 });
 
@@ -250,57 +252,100 @@ test('掃描記錄渲染 llmError（LLM 失敗原因要在面板上看得到）'
   assert.ok(html.includes('llmError'), 'renderScans 要顯示 LLM 失敗原因');
 });
 
-// ── i18n（zh-TW / en 雙語）──
-test('buildPanelHtml: i18n 字典與 t() 存在（zh-TW/en 雙語架構）', () => {
+test('掃描記錄圖示依實際嚴重度：medium 只亮 🟠，別讓人去「嚴重」區白找', () => {
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  assert.ok(html.includes('LANGS'), '要有語言字典 LANGS');
-  assert.ok(html.includes('function t('), '要有 t(key) 查字典函式');
-  assert.ok(html.includes('vg.lang'), '語言選擇要存 localStorage（vg.lang）');
-  assert.ok(html.includes('id="lang-select"'), 'chip 列要有語言切換器');
+  const m = html.match(/function scanBadge\(s\) \{[\s\S]*?\n\}/);
+  assert.ok(m, '模板裡找不到 scanBadge');
+  // scanBadge 走 t() 查字典：抽出來單測時綁一個 zh-TW 的 t
+  const scanBadge = new Function('t', `return (${m[0]});`)((k, p) => tr('zh-TW', k, p));
+  // 使用者實例：routes.ts 6 筆全 medium → 亮紅燈會誤導成「嚴重」
+  assert.deepEqual(scanBadge({ count: 6, sev: { medium: 6 } }), { icon: '🟠', text: '注意 6' });
+  assert.deepEqual(scanBadge({ count: 1, sev: { critical: 1 } }), { icon: '🔴', text: '嚴重 1' });
+  assert.deepEqual(scanBadge({ count: 2, sev: { high: 2 } }), { icon: '🔴', text: '嚴重 2' });
+  assert.deepEqual(scanBadge({ count: 7, sev: { critical: 1, medium: 6 } }), { icon: '🔴', text: '嚴重 1 · 注意 6' });
+  assert.deepEqual(scanBadge({ count: 3, sev: { low: 3 } }), { icon: '🟡', text: '低 3' });
+  assert.deepEqual(scanBadge({ count: 0, sev: {} }), { icon: '✅', text: '' });
+  // 舊記錄沒有 sev 欄位（worker 換版前寫的）→ 沿用舊行為，不炸
+  assert.deepEqual(scanBadge({ count: 6 }), { icon: '🔴', text: '' });
+  assert.deepEqual(scanBadge({ count: 0 }), { icon: '✅', text: '' });
+});
+
+test('「注意」區預設展開：收合等於看不到（使用者實測抱怨「掃到卻沒顯示」）', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
+  assert.ok(html.includes("renderSection(nWrap, t('normal'), 'normal', normal, true)"), '注意區 defaultOpen 要是 true');
+});
+
+// ── i18n（多國語系：字典內嵌、自動偵測、就地切換）──
+function extractPack(html) {
+  const start = html.indexOf('const I18N = ');
+  assert.ok(start !== -1, '找不到 I18N 字典內嵌');
+  const end = html.indexOf(';\n', start);
+  return JSON.parse(html.slice(start + 'const I18N = '.length, end));
+}
+
+test('buildPanelHtml: i18n 字典整包內嵌 + t() + 語言切換器 + 自動偵測', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
+  assert.ok(html.includes('function t('), '要有 t(key, params) 查字典函式');
+  assert.ok(html.includes('vg.lang'), '語言偏好要存 localStorage（vg.lang）');
+  assert.ok(html.includes('id="lang-select"'), '要有語言切換器');
   assert.ok(html.includes('navigator.language'), 'auto 模式要看瀏覽器語言');
+  assert.ok(html.includes('documentElement.lang'), '要同步 <html lang>');
+  const pack = extractPack(html);
+  assert.deepEqual(Object.keys(pack.locales).sort(), Object.keys(LOCALES).sort(), '內嵌的語系集合要與 i18n.mjs 一致');
+  assert.deepEqual(pack.locales['zh-TW'], LOCALES['zh-TW'], '內嵌字典必須就是 i18n.mjs 的字典（單一真相）');
+  assert.deepEqual(pack.names, LOCALE_NAMES);
+  assert.equal(pack.default, DEFAULT_LOCALE);
+  assert.equal(pack.fallback, FALLBACK_LOCALE);
 });
 
-test('buildPanelHtml: en 字典含英文翻譯（抽查數個 key 的英文值）', () => {
+test('buildPanelHtml: en 字典的英文值確實在 HTML 裡（抽查）', () => {
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  assert.ok(html.includes('One-click fix'), 'fix 按鈕的英文');
-  assert.ok(html.includes('Mark all read'), 'markAllRead 的英文');
-  assert.ok(html.includes('No issues found'), 'emptyTitle 的英文');
-  assert.ok(html.includes('Recent scan log'), 'scanLog 的英文');
-});
-
-test('buildPanelHtml: zh-TW 與 en 字典 key 完全一致且都有值', () => {
-  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  const start = html.indexOf('const LANGS = ');
-  assert.ok(start !== -1, '找不到 LANGS 定義');
-  const objStart = html.indexOf('{', start);
-  // 平衡大括號抽出整個字典物件來 eval（同檔既有測試的抽函式手法）
-  let depth = 0;
-  let end = objStart;
-  for (; end < html.length; end++) {
-    if (html[end] === '{') depth++;
-    else if (html[end] === '}') { depth--; if (depth === 0) { end++; break; } }
+  for (const s of ['Mark all read', 'No issues found', 'Recent scan log', 'Security overview', 'Suggested fix']) {
+    assert.ok(html.includes(s), `缺英文：${s}`);
   }
-  const LANGS = eval('(' + html.slice(objStart, end) + ')'); // eslint-disable-line no-eval
-  const zh = Object.keys(LANGS['zh-TW']).sort();
-  const en = Object.keys(LANGS.en).sort();
-  assert.ok(zh.length > 30, '字典規模太小，UI 字串沒收乾淨');
-  assert.deepEqual(en, zh, 'en 與 zh-TW 的 key 集合必須一致');
-  for (const k of zh) {
-    assert.ok(LANGS['zh-TW'][k] && LANGS.en[k], `key ${k} 兩語都要有非空值`);
-  }
+  for (const s of ['セキュリティ概要', '安全总览']) assert.ok(html.includes(s), `缺：${s}`);
 });
 
-test('buildPanelHtml: 靜態 UI 字串走 data-i18n 標記 + 初始化套用', () => {
+test('buildPanelHtml: 靜態 UI 字串走 data-i18n / data-i18n-title 標記 + applyI18n 套用', () => {
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  assert.ok(html.includes('data-i18n="notifyToggle"'), '設定列標題要標 data-i18n');
-  assert.ok(html.includes('data-i18n="chipAll"'), '過濾 chip 要標 data-i18n');
+  for (const key of ['notifyToggle', 'chipAll', 'chipSerious', 'chipNormal', 'markAllRead', 'scanAll', 'openDashboard', 'restart', 'settings', 'llmScanToggle', 'llmPicker', 'langLabel', 'emptyTitle', 'emptySub', 'subtitle']) {
+    assert.ok(html.includes(`data-i18n="${key}"`), `靜態字串 ${key} 要標 data-i18n`);
+    assert.ok(LOCALES['zh-TW'][key], `字典要有 ${key}`);
+  }
+  for (const key of ['scanAllTitle', 'openDashboardTitle', 'restartTitle', 'notifyToggleTitle', 'llmScanToggleTitle', 'llmPickerTitle', 'statusTitle', 'langTitle']) {
+    assert.ok(html.includes(`data-i18n-title="${key}"`), `tooltip ${key} 要標 data-i18n-title`);
+    assert.ok(LOCALES['zh-TW'][key], `字典要有 ${key}`);
+  }
   assert.ok(html.includes("querySelectorAll('[data-i18n]')"), '初始化要跑一次套用');
-  assert.ok(html.includes('data-i18n-title'), 'title/tooltip 屬性也要可翻');
+  assert.ok(html.includes("querySelectorAll('[data-i18n-title]')"), 'title 屬性也要套用');
+  assert.ok(html.includes('function applyI18n'), '要有 applyI18n');
 });
 
-test('buildPanelHtml: 語言切換就地重渲染，不用 location.reload（srcdoc 導航會被 Orca 攔截判死）', () => {
-  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  assert.ok(html.includes('lang-select'), '語言切換器存在');
-  assert.ok(html.includes('applyI18n'), '切語言要重跑靜態字串套用');
+test('buildPanelHtml: 語言切換就地重渲染 + 同步 worker（.locale 走 /api/action），不用 location.reload', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [], settings: { locale: 'auto', dashboardUrl: 'http://127.0.0.1:47391/?token=x' } });
   assert.ok(!html.includes('location.reload('), '既有禁令不變：reload 會把 frame 打壞（watchdog 40 秒判死）');
+  assert.ok(html.includes("kind: 'locale'"), '切語言要通知 worker 寫 .locale');
+  assert.ok(html.includes('DATA.settings.locale') || html.includes('settings.locale'), 'worker 端偏好要當作 localStorage 之後的次順位');
+  assert.ok(html.includes('renderAll('), '切語言後要重渲染全部區塊');
+});
+
+test('buildPanelHtml: 動態字串不再硬編碼中文（抽查關鍵訊息都走 t()）', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
+  const script = html.slice(html.indexOf('<' + 'script>'), html.indexOf('</' + 'script>'));
+  // 字典本身也內嵌在 script 區，所以不能用「script 區無中文」判斷；
+  // 改抓呼叫形式：每個關鍵訊息都要以 t('key' 出現，才代表真的走字典而不是硬編碼
+  for (const key of ['statusGenerated', 'statusNoData', 'unread', 'watchMeta', 'noScanYet', 'wrongFocus', 'noTerminal', 'sendFailed',
+    'openRequested', 'fixRequested', 'issueRequested', 'ignoredFile', 'dismissed', 'noRepoRoot', 'notifyUpdated', 'llmScanOn', 'llmScanOff',
+    'scanAllStarted', 'llmSwitched', 'restartHow', 'dashboardOpened', 'workerDead', 'agoSeconds', 'agoMinutes', 'issueClosed', 'issueOpen',
+    'btnOpen', 'btnFix', 'btnIssue', 'btnIgnoreFile', 'btnDismiss', 'resolvedTitle', 'scanLogTitle', 'scanFailed', 'scanResult',
+    'fixHeader', 'fixFooter', 'issueHeader', 'issueBody', 'issueFooter', 'msgFile', 'msgProblem', 'msgWhy', 'msgSuggest']) {
+    assert.ok(script.includes(`t('${key}'`), `訊息 ${key} 要走 t()`);
+    assert.ok(LOCALES['zh-TW'][key], `字典要有 ${key}`);
+  }
+});
+
+test('buildPanelHtml: 掃描記錄的 note 優先用 noteKey 翻譯（舊記錄只有 note 文字時沿用）', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
+  assert.ok(html.includes('noteKey'), '要看 noteKey');
+  assert.ok(html.includes('noteParams'), '要帶 noteParams');
 });

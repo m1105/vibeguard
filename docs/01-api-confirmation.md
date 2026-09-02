@@ -130,3 +130,7 @@
 - **正式安裝走 Marketplace**：repo 根放 `orca-marketplace.json`（schema：`{name, owner, plugins:[{id: "<publisher>.<id>", source:{kind:"git",url,ref}, description?, categories?}]}`，strictObject，類別需小寫 slug；保留 ID `stablyai.orca-*` 不可佔用）。Settings → Plugins → Marketplaces 加 git source → 瀏覽 → Install。git 安裝的執行目錄是 `plugins-data` 下的內容雜湊快照，**沒有 watcher**。更新 = git push 後在 Marketplace UI 按 Update。
 - **dev 模式 toggle 協議**：按一次、等 10 秒；連點會讓多次 activation 互殺（實測 90ms 內 14 次 activate/deactivate 循環）。
 - CLI 無 `orca plugin` 子指令（2026-08-30 確認），安裝/啟停只能走設定 UI。
+
+## 15. `terminal list` 的 `agentIdentity` 欄位（實測 2026-09-02，Orca 1.4.193）
+
+`orca terminal list --json` 的每個 terminal 物件在 1.4.193 多了 `agentIdentity`（實測值：`"claude"`、`"kimi"`；純 shell 終端沒有這個欄位）。這是**確定訊號**，比 §11 之前只能看 `title`／`preview` 的 TUI 特徵可靠得多。`main.mjs` 的 `isAgentTerminal` 現在先看它、沒有才退回啟發式（舊版 Orca 相容）。其餘欄位（`handle`、`worktreeId`、`worktreePath`、`title`、`preview`、`connected`、`writable`）不變。

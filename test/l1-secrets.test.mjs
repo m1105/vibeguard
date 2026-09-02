@@ -106,7 +106,7 @@ test('scanSecrets: private_key', () => {
 });
 
 test('scanSecrets: database_url', () => {
-  const text = 'postgres://user:pass@host/db';
+  const text = 'postgres://user:FAKEpass@db.example.com/db';
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_database_url');
@@ -132,8 +132,8 @@ test('sk-proj hits openai_key but NOT anthropic_key', () => {
 
 // --- database_url i flag (uppercase) ---
 
-test('POSTGRES://u:p@h/db hits database_url via i flag', () => {
-  const text = 'POSTGRES://u:p@h/db';
+test('POSTGRES://u:FAKE@h/db hits database_url via i flag', () => {
+  const text = 'POSTGRES://u:FAKE@h/db';
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_database_url');

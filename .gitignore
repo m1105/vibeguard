@@ -1,10 +1,21 @@
-.orca-api-ref/
+# 本機工具狀態（不是專案的一部分）
 node_modules/
 .DS_Store
 .omc/
+.omx/
 .serena/
+.codegraph/
+.claude/
+.orca-api-ref/
 crash.log
+
+# 插件執行期狀態檔（worker 在插件目錄寫的；純文字，不進版控）
 .notify-state
 .llm-state
+.llm-scan-state
+.locale
+panel.html.tmp
+
+# 憑證 / token（絕對不進版控；見 SECURITY.md）
 .dash-token
 .llm-token

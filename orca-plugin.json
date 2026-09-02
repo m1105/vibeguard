@@ -3,26 +3,71 @@
   "id": "vibeguard-orca",
   "publisher": "vibeguard",
   "name": "VibeGuard",
-  "version": "0.1.0",
-  "description": "Real-time security guard for AI-generated code: local L1/L2/L3 fast screening + LLM semantic review (Claude/Codex/Gemini).",
-  "engines": { "orca": ">=1.4.0" },
+  "version": "0.2.0",
+  "description": "Real-time security screening for AI-generated code: local L1/L2 regex + optional LLM semantic review (Claude/Codex/Gemini). Advisory only — expect false positives. AI 生成代碼即時安全提醒（會誤報，請人工查證）。",
+  "engines": {
+    "orca": ">=1.4.0"
+  },
   "pluginApi": 1,
   "main": "main.mjs",
   "contributes": {
-    "panels": [{ "id": "vibeguard", "title": "VibeGuard", "icon": "shield", "entry": "panel.html" }],
-    "commands": [
-      { "id": "vibeguard.scanFile", "title": "VibeGuard: Scan File", "context": "worktree" },
-      { "id": "vibeguard.fix", "title": "VibeGuard: One-Click Fix (send to agent terminal)", "context": "worktree" },
-      { "id": "vibeguard.status", "title": "VibeGuard: Status", "context": "global" },
-      { "id": "vibeguard.scanAll", "title": "VibeGuard: Scan Whole Project", "context": "global" }
+    "panels": [
+      {
+        "id": "vibeguard",
+        "title": "VibeGuard",
+        "icon": "shield",
+        "entry": "panel.html"
+      }
     ],
-    "events": [{ "on": "worktree.created" }, { "on": "worktree.removed" }, { "on": "agent.status.changed" }]
+    "commands": [
+      {
+        "id": "vibeguard.scanFile",
+        "title": "VibeGuard: Scan File / 掃描指定檔案",
+        "context": "worktree"
+      },
+      {
+        "id": "vibeguard.fix",
+        "title": "VibeGuard: One-Click Fix (send to agent terminal) / 一鍵修復",
+        "context": "worktree"
+      },
+      {
+        "id": "vibeguard.status",
+        "title": "VibeGuard: Status / 狀態",
+        "context": "global"
+      },
+      {
+        "id": "vibeguard.scanAll",
+        "title": "VibeGuard: Scan Whole Project / 全專案掃描",
+        "context": "global"
+      }
+    ],
+    "events": [
+      {
+        "on": "worktree.created"
+      },
+      {
+        "on": "worktree.removed"
+      },
+      {
+        "on": "agent.status.changed"
+      }
+    ]
   },
   "capabilities": [
-    { "kind": "workspace:read" },
-    { "kind": "terminal:send" },
-    { "kind": "notifications:show" },
-    { "kind": "storage" },
-    { "kind": "events:subscribe" }
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "terminal:send"
+    },
+    {
+      "kind": "notifications:show"
+    },
+    {
+      "kind": "storage"
+    },
+    {
+      "kind": "events:subscribe"
+    }
   ]
 }
