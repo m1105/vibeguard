@@ -2,7 +2,7 @@
 //
 // 為什麼放在 npm test：文件/註解/測試 fixture 也是「會被公開的內容」，靠人眼檢查會漏。
 // 這裡拿本專案自己的 L1 密鑰規則掃全部「會進版控的檔案」（git ls-files 含未追蹤但未被 ignore 的），
-// 命中的字串必須「一眼看得出是假的」（EXAMPLE / FAKE / 連續字母 …），否則測試失敗。
+// 命中任何密鑰規則形狀的字面值一律失敗（fixture 用 fx() 執行期組合；例外只有 AWS 官方範例與純 PEM 標頭）。
 // 這也是 dogfooding：掃描器抓不到的假密鑰形狀，代表規則有漏。
 
 import { test } from 'node:test';
@@ -47,16 +47,16 @@ function isText(file) {
 
 const FILES = candidateFiles().filter(isText);
 
-// 「一眼看得出是假的」：測試 fixture 只准長這樣（policy 寫在 CONTRIBUTING.md）
+// committed 檔案裡「不得出現任何符合密鑰規則形狀的字面值」——GitHub 的 push protection 與
+// secret scanning 純看形狀，連明顯假的連號值（AIzaSyA1234567890abcdef…）都會當外洩開警報
+// （實際發生兩次：Stripe 被 GH013 拒推、Google API key 開了 secret scanning alert）。
+// 測試 fixture 一律執行期組合：fx('sk-ant-', 'a1b2…')。唯二例外：
+//   1. AWS 官方文件範例 AKIAIOSFODNN7EXAMPLE（GitHub 自己就放行）
+//   2. 純 PEM 標頭、沒有 base64 內容（測試只驗標頭）
 export function looksObviouslyFake(s) {
-  const str = String(s);
-  // GitHub push protection 對這些家族「純看形狀」，再假也擋（實際發生：Stripe fixture 被 GH013 拒推）。
-  // 這類 fixture 必須在執行期組合：['sk_live', 'xxxx'].join('_')，檔案裡不得出現完整形狀。
-  if (/^[sr]k_(live|test)_/.test(str)) return false;
-  if (/EXAMPLE|FAKE|DUMMY|REDACTED|PLACEHOLDER|CHANGEME|YOUR[_-]?(KEY|TOKEN|SECRET)/i.test(str)) return true;
-  if (/abcdef|ABCDEF|AbCdEf|aAbBcC|a1b2c3|0123456789|1234567890|xxxxxx|XXXXXX/i.test(str)) return true;
-  // 只有 PEM 標頭、沒有 base64 內容（測試只驗標頭）
-  if (/^-----BEGIN [A-Z ]+PRIVATE KEY-----\s*$/.test(str.trim())) return true;
+  const str = String(s).trim();
+  if (str === 'AKIAIOSFODNN7EXAMPLE') return true;
+  if (/^-----BEGIN [A-Z ]+PRIVATE KEY-----$/.test(str)) return true;
   return false;
 }
 
@@ -94,7 +94,7 @@ test('repo-hygiene：不得含私人絕對路徑（家目錄）與私人信箱',
       if (home.test(ln)) offenders.push(`${file}:${i + 1} 私人絕對路徑：${ln.trim().slice(0, 100)}`);
       for (const m of ln.matchAll(email)) {
         const addr = m[0].toLowerCase();
-        if (addr.endsWith('@example.com') || addr.startsWith('noreply@') || addr.endsWith('@users.noreply.github.com')) continue;
+        if (addr.endsWith('@example.com') || addr.endsWith('.example.com') || addr.startsWith('noreply@') || addr.endsWith('@users.noreply.github.com')) continue;
         if (ln.slice(0, m.index).includes('://')) continue; // URL 裡的 user:pass@host 不是信箱（密鑰形狀由上一個測試把關）
         offenders.push(`${file}:${i + 1} 信箱：${addr}`);
       }

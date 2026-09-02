@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { SYSTEM_PROMPT, buildTaskPrompt, extractJson, llmScan } from '../shield/l23-llm.mjs';
 import { REDACTED } from '../shield/redaction.mjs';
 
-const SK_ANT = 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
+
+const SK_ANT = fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
 
 // --- SYSTEM_PROMPT 逐字 ---
 

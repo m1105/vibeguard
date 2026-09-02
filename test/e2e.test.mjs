@@ -1,3 +1,7 @@
+
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
 // e2e.test.mjs — 端到端驗證（純本地，不碰 Orca）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +11,7 @@ import { join } from 'node:path';
 import { scanText } from '../shield/scanner.mjs';
 import { startPanelServer } from '../panel-server.mjs';
 
-const EVIL = `const key = "sk-ant-api03-aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQ";
+const EVIL = `const key = "${fx('sk-ant-', 'api03-aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQ')}";
 const q = "DELETE FROM users; DROP TABLE users;";
 const q2 = \`SELECT * FROM users WHERE id = \${req.query.id}\`;
 `;

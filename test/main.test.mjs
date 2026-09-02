@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import activate, { deactivate, buildFixMessage, CRASH_LOG_PATH } from '../main.mjs';
 import { HOST } from '../shield/host-methods.mjs';
 
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
+
 test('crash log 寫到 tmpdir（寫插件目錄會觸發 dev watcher refresh，activation 中途把 worker 誤殺）', () => {
   assert.ok(CRASH_LOG_PATH.startsWith(tmpdir()), '要在 tmpdir，不能在插件目錄');
   assert.ok(CRASH_LOG_PATH.includes('vibeguard-crash.log'));
@@ -556,7 +560,7 @@ test('通知節流：重複掃到同批 finding 不再叫；冷卻內的新 crit
   await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
   assert.equal(notifyCount(), 1); // 同批 finding → 不叫
 
-  content = 'const t = "ghp_abcdefghijklmnopqrstuvwxyz0123456789abcd";'; // 另一個 critical
+  content = 'const t = "' + fx('ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789abcd') + '";'; // 另一個 critical
   t += 60 * 1000; // 冷卻 2 分鐘內
   await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });
   assert.equal(notifyCount(), 1); // 冷卻中 → 不叫
@@ -631,7 +635,7 @@ test('.vibeguard-ignore 單筆忽略：rule + 相對路徑:行 只擋該筆', as
     findRepoRoot: () => '/x',
     readFile: async (p) => p.endsWith('.vibeguard-ignore')
       ? 'hardcoded_secret_aws_access_key a.js:1\n'
-      : 'const k = "AKIAIOSFODNN7EXAMPLE";\nconst g = "ghp_abcdefghijklmnopqrstuvwxyz0123456789abcd";',
+      : 'const k = "AKIAIOSFODNN7EXAMPLE";\nconst g = "' + fx('ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789abcd') + '";',
   });
   await activate(orca, deps);
   const findings = await commands.get('vibeguard.scanFile')({ path: '/x/a.js' });

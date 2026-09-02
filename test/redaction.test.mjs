@@ -2,7 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { redactForLlm, REDACTED } from '../shield/redaction.mjs';
 
-const SK_ANT = 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
+
+const SK_ANT = fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
 
 test('密鑰整段替換，原值完全消失', () => {
   const { text, count } = redactForLlm(`const k = "${SK_ANT}";`);
@@ -26,7 +30,7 @@ test('密鑰 + 敏感賦值各算一次', () => {
 });
 
 test('database URL 整段替換', () => {
-  const { text, count } = redactForLlm('const db = "postgres://user:FAKEpassw0rd@db.example.com:5432/app";');
+  const { text, count } = redactForLlm('const db = "' + fx('postgres:', '//user:FAKEpassw0rd@db.example.com:5432/app') + '";');
   assert.ok(!text.includes('passw0rd'));
   assert.ok(!text.includes('db.example.com'));
   assert.equal(count, 1);

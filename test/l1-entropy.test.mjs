@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { shannonEntropy, isHighEntropy, scanEntropy } from '../shield/l1-entropy.mjs';
 import { scanSecrets } from '../shield/l1-secrets.mjs';
 
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
+
 // --- shannonEntropy ---
 
 test('shannonEntropy: empty string → 0', () => {
@@ -109,7 +113,7 @@ test('scanEntropy: client_secret: "..." → finding', () => {
 // --- scanEntropy: seenRanges overlap with prior scanSecrets hit → skipped ---
 
 test('scanEntropy: value overlapping seenRanges from scanSecrets → skipped', () => {
-  const text = 'my_token = "sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"';
+  const text = 'my_token = "' + fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0') + '"';
   const seenRanges = [];
 
   // First: scanSecrets finds the sk-ant key and registers its range

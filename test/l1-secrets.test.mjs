@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { SECRET_RULES, scanSecrets, indexToLineCol } from '../shield/l1-secrets.mjs';
 import { maskSecret } from '../shield/finding.mjs';
 
+// fixture 一律執行期組合（fx）：GitHub 秘密掃描純看形狀，連明顯假的連號值都會當外洩；
+// committed 檔案裡不得出現任何符合密鑰規則的字面值（repo-hygiene 測試把關）。這些全是假值。
+const fx = (...parts) => parts.join('');
+
 // --- indexToLineCol（照 DeepSec _position）---
 
 test('indexToLineCol: first line, no newline before', () => {
@@ -43,14 +47,14 @@ test('scanSecrets: aws_access_key', () => {
 });
 
 test('scanSecrets: github_token', () => {
-  const text = 'token = "ghp_ABCDEFghijklMNOPQRstuvwx1234567890ABCD"';
+  const text = 'token = "' + fx('ghp_', 'ABCDEFghijklMNOPQRstuvwx1234567890ABCD') + '"';
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_github_token');
 });
 
 test('scanSecrets: slack_token', () => {
-  const text = 'xoxb-AbCdEfGhIjKlMnOpQrStUvWx';
+  const text = fx('xoxb-', 'AbCdEfGhIjKlMnOpQrStUvWx');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_slack_token');
@@ -64,35 +68,35 @@ test('scanSecrets: stripe_key', () => {
 });
 
 test('scanSecrets: google_api_key', () => {
-  const text = 'AIzaSyA1234567890abcdefghijklmnopqrstuv';
+  const text = fx('AIza', 'SyA1234567890abcdefghijklmnopqrstuv');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_google_api_key');
 });
 
 test('scanSecrets: npm_token', () => {
-  const text = 'npm_ABCDEFghijklMNOPQRstuvwx1234567890AB';
+  const text = fx('npm_', 'ABCDEFghijklMNOPQRstuvwx1234567890AB');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_npm_token');
 });
 
 test('scanSecrets: anthropic_key', () => {
-  const text = 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const text = fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_anthropic_key');
 });
 
 test('scanSecrets: openai_key (sk-proj-)', () => {
-  const text = 'sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const text = fx('sk-proj-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_openai_key');
 });
 
 test('scanSecrets: jwt', () => {
-  const text = 'eyJabcdefghij1234567890.klmnopqrst1234567890.uvwxyzabcd1234567890';
+  const text = fx('eyJ', 'abcdefghij1234567890.klmnopqrst1234567890.uvwxyzabcd1234567890');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_jwt');
@@ -106,7 +110,7 @@ test('scanSecrets: private_key', () => {
 });
 
 test('scanSecrets: database_url', () => {
-  const text = 'postgres://user:FAKEpass@db.example.com/db';
+  const text = fx('postgres:', '//user:FAKEpass@db.example.com/db');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_database_url');
@@ -115,7 +119,7 @@ test('scanSecrets: database_url', () => {
 // --- sk-ant vs sk-proj discrimination ---
 
 test('sk-ant hits anthropic_key but NOT openai_key', () => {
-  const text = 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const text = fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const out = scanSecrets(text);
   const rules = out.map((f) => f.rule);
   assert.ok(rules.includes('hardcoded_secret_anthropic_key'));
@@ -123,7 +127,7 @@ test('sk-ant hits anthropic_key but NOT openai_key', () => {
 });
 
 test('sk-proj hits openai_key but NOT anthropic_key', () => {
-  const text = 'sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const text = fx('sk-proj-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const out = scanSecrets(text);
   const rules = out.map((f) => f.rule);
   assert.ok(rules.includes('hardcoded_secret_openai_key'));
@@ -132,8 +136,8 @@ test('sk-proj hits openai_key but NOT anthropic_key', () => {
 
 // --- database_url i flag (uppercase) ---
 
-test('POSTGRES://u:FAKE@h/db hits database_url via i flag', () => {
-  const text = 'POSTGRES://u:FAKE@h/db';
+test(fx('POSTGRES:', '//u:FAKE@h/db') + ' hits database_url via i flag', () => {
+  const text = fx('POSTGRES:', '//u:FAKE@h/db');
   const out = scanSecrets(text);
   assert.equal(out.length, 1);
   assert.equal(out[0].rule, 'hardcoded_secret_database_url');
@@ -153,7 +157,7 @@ test('second-line secret: line=2, column correct', () => {
 // --- evidence masking ---
 
 test('evidence does not contain original long secret', () => {
-  const raw = 'sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const raw = fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const out = scanSecrets(raw);
   assert.equal(out.length, 1);
   assert.ok(!out[0].evidence.includes(raw), 'evidence should be masked');
@@ -163,7 +167,7 @@ test('evidence does not contain original long secret', () => {
 // --- seenRanges mechanism ---
 
 test('seenRanges: grows after hit; re-scan skips overlapping', () => {
-  const text = 'key=sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0';
+  const text = 'key=' + fx('sk-ant-', 'a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0');
   const seenRanges = [];
   const first = scanSecrets(text, { seenRanges });
   assert.ok(first.length >= 1);
@@ -175,7 +179,7 @@ test('seenRanges: grows after hit; re-scan skips overlapping', () => {
 });
 
 test('seenRanges: non-overlapping hits both reported', () => {
-  const text = 'a=AKIAIOSFODNN7EXAMPLE b=xoxb-AbCdEfGhIjKlMnOpQrStUvWx';
+  const text = 'a=AKIAIOSFODNN7EXAMPLE b=' + fx('xoxb-', 'AbCdEfGhIjKlMnOpQrStUvWx');
   const seenRanges = [];
   const out = scanSecrets(text, { seenRanges });
   assert.equal(out.length, 2);
