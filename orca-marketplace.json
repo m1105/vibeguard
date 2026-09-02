@@ -1,0 +1,16 @@
+{
+  "name": "VibeGuard Marketplace",
+  "owner": "m1105",
+  "plugins": [
+    {
+      "id": "vibeguard.vibeguard-orca",
+      "source": {
+        "kind": "git",
+        "url": "https://github.com/m1105/vibeguard-orca.git",
+        "ref": "main"
+      },
+      "description": "AI 生成代碼即時安全守護：L1 本地快篩 + L2/L3 LLM 語意審查，三色分級面板、一鍵修復、GitHub issue 追蹤。",
+      "categories": ["security"]
+    }
+  ]
+}

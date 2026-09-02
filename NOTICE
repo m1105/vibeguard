@@ -1,0 +1,31 @@
+VibeGuard for Orca — Attribution Notice
+========================================
+
+This project is a port and continuation of ideas, detection rules, and
+engineering decisions from **DeepSec / VibeGuard** (VS Code extension +
+Python core):
+
+    https://github.com/Unclecheng-li/DeepSec
+
+DeepSec is Copyright (c) 2026 VibeGuard contributors, released under the
+MIT License (see LICENSE).
+
+What was taken from DeepSec (see `docs/02-deepsec-fidelity.md` for the
+full fidelity analysis):
+
+- L1 rule set: secret regexes, sensitive-assignment + Shannon entropy
+  analysis (thresholds 3.8/4.5), insecure-config and AI-pattern rules
+  (`deepsec/shield/rules/patterns.py`)
+- L2 SAST rules (`deepsec/shield/rules/sast.py`)
+- L3 endpoint semantic checks (`deepsec/shield/rules/ai_audit.py`)
+- Scan orchestration: skip lists, size limits, dedup semantics
+  (`deepsec/shield/scanner.py`)
+- The redaction-before-LLM principle and the audit JSON schema
+
+What is different here:
+
+- The Python core and Tree-sitter AST analysis were NOT ported. L2/L3
+  semantic review is delegated to the agent CLI already installed on the
+  user's machine (Claude / Codex / Gemini), with redaction applied first.
+- The runtime is an Orca plugin (`pluginApi: 1`) instead of a VS Code
+  extension.

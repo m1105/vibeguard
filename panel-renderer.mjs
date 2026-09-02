@@ -1,0 +1,881 @@
+// panel-renderer.mjs — 產生 panel.html（ISSUE-10 重做版 v2）。
+//
+// 為什麼是「產生式」：實測 Orca panel shell 的 CSP 是 `connect-src 'none'`
+// （plugin-panel-shell.ts），沙箱 iframe 不能 fetch 任何東西，127.0.0.1 HTTP
+// 通道對 panel 無效。panel 能出資料的唯一辦法 = worker 把 findings 內嵌進
+// panel.html；panel 每次開啟都從磁碟重讀（plugin-panel-controller.load）。
+// panel 對外的動作走 postMessage bridge 的三個合法 action（readContext/sendText/notify）。
+// 開檔沒有跳行：Orca CLI/插件 API 都不支援行號（docs/01 §10），只能開檔。
+
+// JSON 內嵌進 <script>：把 `<` 轉成 < 防 </script> 逃逸（我們是安全工具）
+export function safeInlineJson(data) {
+  return JSON.stringify(data).replace(/</g, '\\u003c');
+}
+
+/**
+ * @param {{ generatedAt: string|null, groups: object, scans?: Array,
+ *   resolved?: Array, terminals?: object }} data
+ *   groups = { worktreeId: { agent: Finding[] } }
+ *   terminals = { worktreeId: { agent: string|null, shell: string|null } }
+ * @returns {string} 完整 panel.html 內容
+ */
+export function buildPanelHtml(data) {
+  return TEMPLATE_HEAD + safeInlineJson(data) + TEMPLATE_TAIL;
+}
+
+const TEMPLATE_HEAD = `<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeGuard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: var(--background, #fbfbfc);
+    --fg: var(--foreground, #1b1e24);
+    --muted: var(--muted-foreground, #70757e);
+    --line: var(--border, rgba(125,132,148,.28));
+    --card: var(--secondary, rgba(125,132,148,.07));
+    --card-2: rgba(125,132,148,.14);
+    --crit: #e5484d; --warn: #d98a1c; --ok: #2f9e6b; --accent: #3b82f6;
+    --crit-soft: rgba(229,72,77,.10); --accent-soft: rgba(59,130,246,.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--background, #121419);
+      --fg: var(--foreground, #e7e9ee);
+      --muted: var(--muted-foreground, #8d939e);
+      --line: var(--border, rgba(148,158,178,.20));
+      --card: var(--secondary, rgba(148,158,178,.09));
+      --card-2: rgba(148,158,178,.16);
+      --warn: #e6a13c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+    margin: 0; padding: 12px 14px 24px;
+    background: var(--bg); color: var(--fg);
+    font-size: 13px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  button, select { font: inherit; color: inherit; }
+  button:focus-visible, select:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .loc, .scan { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+  /* ── 頂欄 ── */
+  .topbar { display: flex; align-items: center; gap: 7px; }
+  .topbar .logo { color: var(--accent); flex: none; }
+  h3 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
+  .topbar .sub { color: var(--muted); font-size: 11px; }
+  #unread-count { margin-left: auto; font-size: 11px; color: var(--accent); flex: none; }
+  #unread-count:not(:empty) { background: var(--accent-soft); border-radius: 999px; padding: 2px 9px; font-weight: 600; }
+  #status { font-size: 11px; color: var(--muted); margin: 4px 0 10px; min-height: 14px; word-break: break-all; }
+  /* ── KPI 摘要卡 ── */
+  #summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 2px; }
+  .kpi { border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 11px 7px; }
+  .kpi .n { font-size: 21px; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; }
+  .kpi .l { font-size: 11px; color: var(--muted); margin-top: 1px; letter-spacing: .02em; }
+  .kpi.crit .n { color: var(--crit); }
+  .kpi.warn .n { color: var(--warn); }
+  .kpi.ok .n { color: var(--ok); }
+  .kpi.zero .n { color: var(--muted); opacity: .55; }
+  .kpi-meta { grid-column: 1 / -1; color: var(--muted); font-size: 11px; padding: 0 2px; }
+  /* ── 過濾/動作 chips（sticky 工具列）── */
+  .chips { position: sticky; top: 0; z-index: 3; display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+    padding: 8px 0; margin-bottom: 2px; background: var(--bg); box-shadow: 0 1px 0 var(--line); }
+  .chips .gap { flex: 1; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; background: transparent;
+    cursor: pointer; font-size: 12px; white-space: nowrap; flex: none;
+    transition: background .15s, border-color .15s, transform .06s; }
+  .chip:hover { background: var(--card-2); }
+  .chip:active { transform: scale(.96); }
+  .chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 600; }
+  /* ── 設定收納卡 ── */
+  .card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); margin: 10px 0 2px; }
+  .card .body { padding: 0 12px 4px; }
+  summary { list-style: none; cursor: pointer; font-weight: 600; font-size: 12px;
+    display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 9px;
+    transition: background .15s; word-break: break-all; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: '▸'; color: var(--muted); font-size: 10px; flex: none; transition: transform .15s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  summary:hover { background: var(--card-2); }
+  .card > summary { padding: 8px 12px; border-radius: 12px; }
+  .sum-hint { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 2px; }
+  .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 8px 0; font-size: 12px; border-top: 1px solid var(--line); }
+  .switch { position: relative; display: inline-block; width: 36px; height: 20px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; inset: 0; background: var(--card-2); border: 1px solid var(--line);
+    border-radius: 20px; transition: .2s; cursor: pointer; }
+  .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px;
+    background: #fff; border-radius: 50%; transition: .2s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .switch input:checked + .slider { background: var(--accent); border-color: transparent; }
+  .switch input:checked + .slider::before { transform: translateX(16px); }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* ── LLM 下拉（自繪 chevron，不用圖片避免 CSP）── */
+  .llm-picker { display: inline-flex; gap: 6px; flex: none; }
+  .vg-select-wrap { position: relative; display: inline-block; }
+  .vg-select-wrap::after { content: '▾'; position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+    pointer-events: none; color: var(--muted); font-size: 11px; }
+  .vg-select { appearance: none; -webkit-appearance: none; background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; font-size: 12px;
+    padding: 5px 24px 5px 10px; min-height: 28px; cursor: pointer; transition: background .15s; }
+  .vg-select:hover { background: var(--card-2); }
+  /* ── 嚴重度分區 ── */
+  .sec { display: flex; align-items: center; gap: 7px; font-weight: 650; margin: 16px 0 2px; font-size: 12.5px; }
+  .sec::before { content: ''; width: 8px; height: 8px; border-radius: 3px; flex: none; }
+  .sec.serious { color: var(--crit); }
+  .sec.serious::before { background: var(--crit); }
+  .sec.normal { color: var(--warn); }
+  .sec.normal::before { background: var(--warn); }
+  details { margin-top: 4px; }
+  details .row { margin-left: 14px; }
+  /* ── finding 卡片 ── */
+  .row { position: relative; border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 10px 7px 13px; margin-top: 6px; background: var(--card);
+    transition: background .15s, border-color .15s; }
+  .row::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--muted); }
+  .row:hover { background: var(--card-2); }
+  .row.critical::before, .row.high::before { background: var(--crit); }
+  .row.medium::before { background: var(--warn); }
+  .row.low::before { background: var(--ok); }
+  .title { display: flex; flex-direction: column; gap: 5px; font-weight: 600; font-size: 12.5px; }
+  .btns { display: flex; gap: 5px; flex-wrap: wrap; }
+  .btn { border: 1px solid var(--line); border-radius: 7px; background: transparent;
+    padding: 2px 8px; cursor: pointer; font-size: 11px; font-weight: 400; white-space: nowrap;
+    transition: background .15s, transform .06s; }
+  .btn:hover { background: var(--card-2); }
+  .btn:active { transform: scale(.96); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .desc { font-size: 12px; font-weight: 400; margin-top: 3px; word-break: break-all; opacity: .85; line-height: 1.5; }
+  .badge-new { display: inline-block; background: var(--accent); color: #fff; border-radius: 6px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: .03em; padding: 1px 5px; margin-right: 6px; vertical-align: 1px; }
+  .loc { font-size: 10.5px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+  .snippet { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; line-height: 1.6; background: var(--card-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 9px; margin: 5px 0 0; overflow-x: auto; white-space: pre; }
+  /* ── 空狀態 ── */
+  #empty-state { text-align: center; padding: 38px 12px 30px; color: var(--muted); }
+  #empty-state svg { color: var(--ok); opacity: .9; margin-bottom: 10px; }
+  #empty-state .t { font-size: 13px; font-weight: 600; color: var(--fg); }
+  #empty-state .s { font-size: 11.5px; margin-top: 3px; }
+  /* ── 掃描記錄 / 心跳警示 ── */
+  .scan { font-size: 10.5px; color: var(--muted); margin: 3px 0 0 14px; word-break: break-all; }
+  .worker-dead { background: var(--crit-soft); border: 1px solid rgba(229,72,77,.35); border-radius: 10px;
+    padding: 8px 10px; margin: 8px 0; font-size: 12px; color: var(--fg);
+    display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px;
+    border: 3px solid transparent; background-clip: content-box; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <svg class="logo" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m8.6 12.2 2.3 2.4 4.5-4.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <h3>VibeGuard</h3>
+  <span class="sub">安全總覽</span>
+  <span id="unread-count"></span>
+</header>
+<div id="status" title="面板資料為掃描時快照；關閉再開面板取得最新"></div>
+<div id="summary"></div>
+<div class="chips" id="chips">
+  <button class="chip active" data-f="all" type="button">全部</button>
+  <button class="chip" data-f="serious" type="button">僅嚴重</button>
+  <button class="chip" data-f="normal" type="button">僅注意</button>
+  <span class="gap"></span>
+  <button class="chip" id="mark-all-read" type="button">✓ 全部已讀</button>
+  <button class="chip" id="scan-all" type="button" title="掃描所有監聽中 worktree 的全部檔案（背景執行；LLM 層依開關與佇列保護，不會爆額度）">🔍 掃全專案</button>
+  <button class="chip" id="open-dashboard" type="button" title="在 Orca 內嵌瀏覽器開啟即時 dashboard（每 2 秒自動更新，不用手動刷新）">🚀 即時</button>
+  <button class="chip" id="restart-worker" type="button" title="重新啟動 worker（載入最新程式碼；插件設定頁的開關 toggle 也有同樣效果）">🔄 重啟</button>
+</div>
+<details class="card" id="settings-card">
+  <summary>⚙️ 設定<span class="sum-hint">通知・LLM 開關・框架</span></summary>
+  <div class="body">
+    <div class="setting-row" title="嚴重問題的桌面通知；關掉後照樣掃、照樣記錄，只是不跳通知">
+      <span>🔔 啟用通知</span>
+      <label class="switch"><input type="checkbox" id="notify-toggle"><span class="slider"></span></label>
+    </div>
+    <div class="setting-row" title="關掉後掃描只跑本地 regex（L1/L2），完全不叫 LLM——省 AI 額度；隨時可再開">
+      <span>🤖 LLM 掃描</span>
+      <label class="switch"><input type="checkbox" id="llm-scan-toggle"><span class="slider"></span></label>
+    </div>
+    <div class="setting-row" title="背景掃描用的 LLM（便宜模型即可）">
+      <span>🧠 L3 語意審查</span>
+      <span class="llm-picker">
+        <span class="vg-select-wrap"><select id="llm-framework" class="vg-select">
+          <option value="claude">claude</option>
+          <option value="codex">codex</option>
+          <option value="gemini">gemini</option>
+        </select></span>
+        <span class="vg-select-wrap"><select id="llm-model" class="vg-select"></select></span>
+      </span>
+    </div>
+  </div>
+</details>
+<div id="main"></div>
+<div id="empty-state" hidden>
+  <svg width="44" height="44" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="m8.6 12.2 2.3 2.4 4.5-4.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <div class="t">目前沒有發現問題</div>
+  <div class="s">監聽中——有檔案變動就會自動掃描</div>
+</div>
+<div id="resolved"></div>
+<div id="scanlog"></div>
+<script>
+'use strict';
+// 資料由 worker 內嵌（CSP connect-src 'none'，panel 無法 fetch）
+const DATA = window.__VIBEGUARD_DATA__ || `;
+
+const TEMPLATE_TAIL = `;
+
+const SERIOUS = ['critical', 'high'];
+
+// ── 檢視狀態保留：面板每次掃描都會重烤（整份 HTML 重載），
+// 捲動位置 / 已讀集合 / 折疊狀態存 localStorage，重烤後還原，不刷掉使用者正在看的東西 ──
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 沙箱擋就算了 */ } },
+};
+// finding 穩定 key（rule+target+line；跨重烤不變才能追蹤已讀）
+function keyOf(f) { return (f.rule || '') + ' ' + (f.target || '') + ':' + (f.line == null ? '?' : f.line); }
+const readSet = LS.get('vg.read', {});
+const openState = LS.get('vg.open', {});
+function updateUnreadCount() {
+  let n = 0;
+  for (const agents of Object.values(DATA.groups || {})) {
+    for (const fs2 of Object.values(agents || {})) {
+      for (const f of fs2) if (!readSet[keyOf(f)]) n += 1;
+    }
+  }
+  const el = document.getElementById('unread-count');
+  if (el) el.textContent = n > 0 ? n + ' 未讀' : '';
+}
+function markRead(k, badge) {
+  if (!readSet[k]) { readSet[k] = true; LS.set('vg.read', readSet); }
+  if (badge) badge.remove();
+  updateUnreadCount();
+}
+// details 折疊狀態持久化（key 不存在時用 defaultOpen 預設）
+function persistDetails(det, key, defaultOpen) {
+  if (key in openState) det.open = !!openState[key];
+  else det.open = !!defaultOpen;
+  det.addEventListener('toggle', () => { openState[key] = det.open; LS.set('vg.open', openState); });
+}
+
+// ── postMessage bridge（panel 唯一對外通道；僅 3 個合法 action）──
+let reqSeq = 0;
+const pending = new Map();
+window.addEventListener('message', (ev) => {
+  const d = ev.data;
+  // Orca panel watchdog：shell 定期 ping，5 秒內不回 pong 會被判無響應暫停
+  // （asar：PANEL_PING_TYPE/PANEL_PONG_TYPE；pong 需帶原 pingId）
+  if (d && d.type === 'orca-panel-ping') {
+    window.parent.postMessage({ type: 'orca-panel-pong', pingId: d.pingId }, '*');
+    return;
+  }
+  if (d && d.type === 'orca-panel-action-result' && pending.has(d.requestId)) {
+    pending.get(d.requestId)(d);
+    pending.delete(d.requestId);
+  }
+});
+function callHost(action, params) {
+  return new Promise((resolve) => {
+    const requestId = 'vg-' + (++reqSeq);
+    pending.set(requestId, resolve);
+    window.parent.postMessage({ type: 'orca-panel-action', requestId, action, params }, '*');
+  });
+}
+
+// kind: 'agent'（修復/開issue/忽略 → agent terminal）| 'shell'（開檔指令 → 一般終端）
+// 注意：host 的 terminal.sendText 硬性只送「目前 focus 的 worktree」的 terminal，
+// 跨 worktree 會被擋（'terminal is outside the active worktree'）→ 回 wrong-focus 讓 UI 引導
+async function sendToTerminal(text, worktreeId, kind) {
+  const baked = worktreeId && DATA.terminals && DATA.terminals[worktreeId];
+  const handle = baked && baked[kind];
+  if (handle) {
+    // enter 策略：shell 指令（sq 跳脫過的單行命令）可自動 Enter；
+    // agent 類訊息只在身分確定（agentSure）時自動送，身分不明就放進輸入框等使用者確認
+    const autoEnter = kind === 'shell' || baked.agentSure !== false;
+    const r = await callHost('terminal.sendText', { terminalId: handle, text: text.slice(0, 4096), enter: autoEnter });
+    if (r && r.ok) return { ok: true, manual: !autoEnter };
+    if (r && String(r.error || '').indexOf('outside the active worktree') !== -1) return { ok: false, reason: 'wrong-focus' };
+  }
+  if (kind === 'shell') return { ok: false, reason: 'no-shell-terminal' };
+  // agent 類：落回 focused worktree 的第一個 terminal
+  const ctx = await callHost('workspace.readContext', {});
+  const terminals = ctx && ctx.ok && ctx.value && ctx.value.terminals;
+  const terminalId = terminals && terminals[0] && terminals[0].id;
+  if (!terminalId) return { ok: false, reason: 'no-terminal' };
+  // 安全：落回 focused terminal 時不自動 Enter（可能是 shell，多行文字會被逐行執行）
+  const r = await callHost('terminal.sendText', { terminalId, text: text.slice(0, 4096), enter: false });
+  return r && r.ok ? { ok: true, fallback: true } : { ok: false, reason: (r && r.error) || 'send-failed' };
+}
+
+function reportResult(r, okMsg) {
+  if (r.ok && r.manual) { setStatus(okMsg + '（終端身分不確定：已放入輸入框，請確認後自行送出）'); return; }
+  if (r.ok && r.fallback) { setStatus(okMsg + '（送到目前 focus 的 worktree）'); return; }
+  if (r.ok) { setStatus(okMsg); return; }
+  if (r.reason === 'wrong-focus') { setStatus('⚠️ 這筆屬於別的 worktree——請先在側邊欄點進它，再按一次'); return; }
+  if (r.reason === 'no-terminal') { setStatus('此 worktree 沒有開著的 terminal'); return; }
+  if (r.reason === 'no-shell-terminal') { setStatus('此 worktree 沒有 shell terminal 可下指令'); return; }
+  setStatus('送出失敗：' + r.reason);
+}
+
+// finding 欄位消毒：內容來自被掃描檔案與 LLM 回傳（不可信），送進終端前
+// 清掉換行/ESC/控制字元（防多行注入與 ANSI 逃脫）並限制單欄長度
+function clean(s, max) { return String(s == null ? '' : s).replace(/[\\x00-\\x1f\\x7f]/g, ' ').slice(0, max || 500); }
+function lineOf(f) { return Number.isInteger(f.line) ? f.line : '?'; }
+function fields(f) {
+  return '檔案：' + clean(f.target, 300) + ':' + lineOf(f) + '\\n' +
+    '問題：' + clean(f.title, 200) + '\\n' +
+    '為什麼危險：' + clean(f.description) + '\\n' +
+    '建議修法：' + clean(f.suggestion);
+}
+function buildFixMessage(f) {
+  return '【VibeGuard 安全警告】\\n' + fields(f) + '\\n請直接修正並說明你改了什麼。';
+}
+function buildIssueMessage(f) {
+  return '【VibeGuard 安全警告 — 請開 GitHub issue 記錄，先不要修】\\n' + fields(f) +
+    '\\n請用 gh issue create 在本 repo 開一個 issue 記錄（標題前綴 [VibeGuard]，內容含上面四欄），' +
+    '內文最後一定要加這行機器標記（VibeGuard 靠它追蹤狀態）：\\n' +
+    'vibeguard-key:' + clean(f.rule, 100) + ' ' + clean(f.target, 300) + '\\n' +
+    '開完回報 issue 編號即可，不要動程式碼。';
+}
+function sq(s) { return "'" + String(s).replace(/'/g, "'\\\\''") + "'"; } // shell 單引號跳脫（檔名可注入，enter:true 會直接執行）
+// 忽略/免檢：優先走 worker 的 /api/action（curl 一行，worker 端驗證+寫檔+立即重烤）；
+// 沒有 dashboardUrl（server 沒起）才退回 printf 直寫 .vibeguard-ignore
+function ignoreFilePath(f) { return clean(f.repoRoot, 300) + '/.vibeguard-ignore'; }
+function bareCurl(bodyObj) {
+  const du = String((DATA.settings && DATA.settings.dashboardUrl) || '');
+  if (!du.length) return null;
+  const api = du.replace('/?token=', '/api/action?token=');
+  return 'curl -s -X POST ' + sq(api) + " -H 'Content-Type: application/json' -d " + sq(JSON.stringify(bodyObj));
+}
+function actionCurl(kind, f) {
+  return bareCurl({ kind: kind, rule: clean(f.rule, 100), target: clean(f.target, 400), line: f.line });
+}
+function buildIgnoreCommand(f) {
+  // 語義：這個檔案不再檢查這項規則（'ignore' = rule + repo 相對路徑）
+  const viaApi = actionCurl('ignore', f);
+  if (viaApi) return viaApi;
+  const fileKey = f.ignoreKey ? clean(f.ignoreKey, 400).replace(/:\\d+$/, '') : (clean(f.rule, 100) + ' ' + clean(f.target, 300));
+  return "printf '%s" + String.fromCharCode(92) + "n' " + sq(fileKey) + ' >> ' + sq(ignoreFilePath(f));
+}
+function buildDismissCommand(f) {
+  // 語義：只忽略這一筆（'dismiss' = rule + repo 相對路徑:行）
+  const viaApi = actionCurl('dismiss', f);
+  if (viaApi) return viaApi;
+  const key = f.ignoreKey ? clean(f.ignoreKey, 400) : (clean(f.rule, 100) + ' ' + clean(f.target, 300) + ':' + lineOf(f));
+  return "printf '%s" + String.fromCharCode(92) + "n' " + sq(key) + ' >> ' + sq(ignoreFilePath(f));
+}
+
+// 背景 shell 指令（寫 .vibeguard-ignore / state 檔 / touch）：一律優先 agentSure 的
+// agent 終端 + ! 本機 shell 模式（理由同開檔）；shell 欄位只是備援（現行 worker 已不再產生）。
+async function sendShellCommand(cmd, preferWt) {
+  const entries = Object.entries(DATA.terminals || {});
+  if (preferWt) entries.sort((a, b) => (a[0] === preferWt ? -1 : b[0] === preferWt ? 1 : 0));
+  for (const [wt, t] of entries) {
+    if (t.agent && t.agentSure !== false) { const r = await sendToTerminal('!' + cmd, wt, 'agent'); if (r.ok) return r; }
+  }
+  for (const [wt, t] of entries) {
+    if (t.shell) { const r = await sendToTerminal(cmd, wt, 'shell'); if (r.ok) return r; }
+  }
+  // 最後備援：借 focused 視窗的現有終端逐一試（使用者指示：找不到不能就放棄）。
+  // 單行 sq 跳脫 + '!' 前綴：agent TUI 會當本機 shell 執行；真 shell 只會 event not found，無害
+  const ctx = await callHost('workspace.readContext', {});
+  const terms = (ctx && ctx.ok && ctx.value && ctx.value.terminals) || [];
+  for (const t of terms) {
+    if (!t || !t.id) continue;
+    const r = await callHost('terminal.sendText', { terminalId: t.id, text: ('!' + cmd).slice(0, 4096), enter: true });
+    if (r && r.ok) return { ok: true, focused: true };
+  }
+  return { ok: false, reason: terms.length ? 'send-failed' : 'no-terminal-open' };
+}
+function reportShellResult(r, okMsg, cmd) {
+  if (r.ok && r.focused) { setStatus(okMsg + '（已借目前視窗的終端執行）'); return; }
+  if (r.ok) { setStatus(okMsg + '（worker 幾秒內套用，總數會真的下降）'); return; }
+  if (r.reason === 'no-terminal-open') { setStatus('目前視窗沒有任何終端——開一個終端再按一次即可'); return; }
+  setStatus('送出失敗——請手動在任一終端執行：' + cmd);
+}
+// 本次工作階段的即時隱藏（worker 套用忽略規則重烤後才真正移除；指令失敗時重開面板會回來）
+const runtimeHidden = new Set();
+function buildOpenCommand(f) {
+  // 無跳行：Orca CLI 不支援行號（docs/01 §10）
+  const wt = f.worktreeId && f.worktreeId !== 'manual' ? String(f.worktreeId).split('::').pop() : null;
+  return 'orca file open ' + sq(f.target || '') + (wt ? ' --worktree ' + sq('path:' + wt) : '');
+}
+
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
+
+function mkBtn(label, title, onClick) {
+  const b = document.createElement('button');
+  b.className = 'btn';
+  b.type = 'button';
+  b.textContent = label;
+  if (title) b.title = title;
+  b.addEventListener('click', async () => {
+    b.disabled = true;
+    await onClick();
+    b.disabled = false;
+  });
+  return b;
+}
+
+function findingRow(f) {
+  const row = document.createElement('div');
+  row.className = 'row ' + (f.severity || 'medium');
+
+  const titleLine = document.createElement('div');
+  titleLine.className = 'title';
+  const title = document.createElement('span');
+  // 未讀徽章（背景更新後一眼看出哪些是新出現的）
+  const k = keyOf(f);
+  let badge = null;
+  if (!readSet[k]) {
+    badge = document.createElement('span');
+    badge.className = 'badge-new';
+    badge.textContent = 'NEW';
+    title.appendChild(badge);
+  }
+  title.appendChild(document.createTextNode(f.title || f.rule)); // textNode，不用 innerHTML
+  titleLine.appendChild(title);
+  // 點列任何處（含按鈕）視為已讀
+  row.addEventListener('click', () => markRead(k, badge));
+  // 本次工作階段的即時隱藏（按下免檢/忽略時）
+  if (runtimeHidden.has(k) || runtimeHidden.has('file:' + (f.rule || '') + ' ' + (f.target || ''))) {
+    row.style.display = 'none';
+  }
+
+  const btns = document.createElement('span');
+  btns.className = 'btns';
+
+  btns.appendChild(mkBtn('📄 開檔', '在 Orca 編輯器開啟此檔（worker 直接執行，跨 worktree 也正確）', async () => {
+    const via = actionCurl('open', f);
+    if (via) { reportShellResult(await sendShellCommand(via, f.worktreeId), '✅ 已請 worker 開檔：' + clean(f.target, 300), via); return; }
+    const baked = f.worktreeId && DATA.terminals && DATA.terminals[f.worktreeId];
+    const cmd = buildOpenCommand(f);
+    let r;
+    // 一律優先 agent 終端的 ! 本機 shell 模式（終端身分只能猜，純指令誤送 agent 會打進對話；
+    // ! 誤中真 shell 只是 event not found）。身分不確定時 sendToTerminal 會 enter:false 留輸入框。
+    if (baked && baked.agent) r = await sendToTerminal('!' + cmd, f.worktreeId, 'agent');
+    else if (baked && baked.shell) r = await sendToTerminal(cmd, f.worktreeId, 'shell');
+    else r = { ok: false, reason: 'no-terminal' };
+    if (r.ok) setStatus('已送出開檔指令：' + clean(f.target, 300) + (r.manual ? '（請到該終端確認後自行送出）' : ''));
+    else if (r.reason === 'wrong-focus') reportResult(r, '');
+    else setStatus('此 worktree 沒有可用的終端，請手動開：' + clean(f.target, 300) + ':' + lineOf(f));
+  }));
+  btns.appendChild(mkBtn('🔧 修復', '把修法送回「該 finding 所屬 worktree」的 agent（worker 跨 worktree 路由，不會誤送別的代理）', async () => {
+    const via = actionCurl('fix', f);
+    if (via) { reportShellResult(await sendShellCommand(via, f.worktreeId), '✅ 修法已由 worker 送到該 worktree 的 agent：' + (f.title || f.rule), via); return; }
+    reportResult(await sendToTerminal(buildFixMessage(f), f.worktreeId, 'agent'), '已送回 agent terminal：' + (f.title || f.rule));
+  }));
+  btns.appendChild(mkBtn('📝 開 Issue', '請「該 worktree」的 agent 用 gh issue create 記錄，先不修（worker 跨 worktree 路由）', async () => {
+    const via = actionCurl('issue', f);
+    if (via) { reportShellResult(await sendShellCommand(via, f.worktreeId), '✅ 已請該 worktree 的 agent 開 issue：' + (f.title || f.rule), via); return; }
+    reportResult(await sendToTerminal(buildIssueMessage(f), f.worktreeId, 'agent'), '已請 agent 開 issue 記錄：' + (f.title || f.rule));
+  }));
+  btns.appendChild(mkBtn('🚫 此檔免檢', '此檔案不再檢查這項規則（shell 指令直接寫 .vibeguard-ignore，不經過 AI、不打斷開發）', async () => {
+    if (!f.repoRoot) { setStatus('此筆缺 repo 根資訊——請在該專案改個檔觸發重掃後再試'); return; }
+    runtimeHidden.add('file:' + (f.rule || '') + ' ' + (f.target || ''));
+    renderMain(DATA.groups); // 即時隱藏同檔同規則的所有列
+    const cmd = buildIgnoreCommand(f);
+    reportShellResult(await sendShellCommand(cmd, f.worktreeId), '✅ 已寫入 .vibeguard-ignore（此檔 ' + f.rule + ' 免檢）', cmd);
+  }));
+  btns.appendChild(mkBtn('🙈 忽略這筆', '只忽略這一筆，同檔同行不再顯示（shell 指令直接寫檔，不經過 AI）', async () => {
+    if (!f.repoRoot) { setStatus('此筆缺 repo 根資訊——請在該專案改個檔觸發重掃後再試'); return; }
+    runtimeHidden.add(k);
+    renderMain(DATA.groups);
+    const cmd = buildDismissCommand(f);
+    reportShellResult(await sendShellCommand(cmd, f.worktreeId), '✅ 已寫入 .vibeguard-ignore（忽略這一筆）', cmd);
+  }));
+
+  titleLine.appendChild(btns);
+  row.appendChild(titleLine);
+
+  // 命中說明（哪個變數/為什麼危險）——使用者要一眼看出中了什麼
+  if (f.description) {
+    const desc = document.createElement('div');
+    desc.className = 'desc';
+    desc.textContent = f.description;
+    row.appendChild(desc);
+  }
+
+  // 代碼片段（worker 內嵌，密鑰已遮蔽）：開檔不能跳行，把命中行代碼帶到面板上
+  if (Array.isArray(f.snippet) && f.snippet.length) {
+    const pre = document.createElement('pre');
+    pre.className = 'snippet';
+    const rows = [];
+    for (const s2 of f.snippet.slice(0, 7)) {
+      const mark = s2.ln === f.line ? '▸ ' : '  ';
+      rows.push(mark + String(s2.ln) + '  ' + clean(s2.text, 200));
+    }
+    pre.textContent = rows.join('\\n');
+    row.appendChild(pre);
+  }
+
+  const loc = document.createElement('div');
+  loc.className = 'loc';
+  const conf = typeof f.confidence === 'number' ? ' · ' + Math.round(f.confidence * 100) + '%' : '';
+  const when = f.foundAt ? new Date(f.foundAt).toLocaleTimeString() + ' · ' : '';
+  loc.textContent = when + (f.target || '?') + ':' + (f.line ?? '?') + ' · ' + (f.layer || '') + conf;
+  row.appendChild(loc);
+
+  // issue 追蹤徽章（worker 用 gh 對上 vibeguard-key 標記才有）
+  const issue = DATA.issues && DATA.issues[(f.rule || '') + ' ' + (f.target || '')];
+  if (issue) {
+    const badge = document.createElement('div');
+    badge.className = 'loc';
+    badge.textContent = issue.state === 'CLOSED'
+      ? '✔ issue #' + issue.number + ' 已完成'
+      : '🔗 issue #' + issue.number + ' 已開（待修）';
+    row.appendChild(badge);
+  }
+  return row;
+}
+
+// 依 severity 分層 + 每個 worktree 可折疊
+function renderSection(parent, title, cls, groups, defaultOpen) {
+  const wts = Object.entries(groups || {});
+  let total = 0;
+  for (const [, agents] of wts) for (const [, fs2] of Object.entries(agents)) total += fs2.length;
+  if (!total) return 0;
+  const h = document.createElement('div');
+  h.className = 'sec ' + cls;
+  h.textContent = title + '（' + total + '）';
+  parent.appendChild(h);
+  for (const [wt, agents] of wts) {
+    const all = [];
+    for (const [, fs2] of Object.entries(agents || {})) all.push(...fs2);
+    if (!all.length) continue;
+    const det = document.createElement('details');
+    persistDetails(det, cls + '|' + wt, defaultOpen); // 折疊狀態跨重烤保留
+    const sum = document.createElement('summary');
+    sum.textContent = wt.split('::').pop() + '（' + all.length + '）';
+    det.appendChild(sum);
+    for (const f of all) det.appendChild(findingRow(f));
+    parent.appendChild(det);
+  }
+  return total;
+}
+
+function splitBySeverity(groups) {
+  const serious = {};
+  const normal = {};
+  for (const [wt, agents] of Object.entries(groups || {})) {
+    for (const [agent, fs2] of Object.entries(agents || {})) {
+      for (const f of fs2) {
+        const bucket = SERIOUS.includes(f.severity) ? serious : normal;
+        (bucket[wt] = bucket[wt] || {})[agent] = (bucket[wt][agent] || []).concat(f);
+      }
+    }
+  }
+  return { serious, normal };
+}
+
+function renderMain(groups) {
+  const el = document.getElementById('main');
+  el.textContent = '';
+  const wts = Object.entries(groups || {});
+  let total = 0;
+  for (const [, agents] of wts) for (const [, fs2] of Object.entries(agents)) total += fs2.length;
+  const { serious, normal } = splitBySeverity(groups);
+
+  // KPI 摘要卡（空狀態也要渲染，數字歸零才有「都修完了」的回饋）
+  const box = document.getElementById('summary');
+  box.textContent = '';
+  function kpi(n, label, cls) {
+    const t = document.createElement('div');
+    t.className = 'kpi ' + cls + (n === 0 ? ' zero' : '');
+    const num = document.createElement('div');
+    num.className = 'n';
+    num.textContent = String(n);
+    const lab = document.createElement('div');
+    lab.className = 'l';
+    lab.textContent = label;
+    t.appendChild(num);
+    t.appendChild(lab);
+    box.appendChild(t);
+  }
+  kpi(countOf(serious), '嚴重', 'crit');
+  kpi(countOf(normal), '注意', 'warn');
+  kpi((DATA.resolved || []).length, '已修正', 'ok');
+  // 掃描狀態：回答「有沒有在掃」——監聽中的 worktree 數 + 最後一次實際掃描時間
+  const scans = DATA.scans || [];
+  const watchState = new Map();
+  let lastScanAt = null;
+  for (const sc of scans) { // scans 新→舊；每個 path 取最新一筆事件
+    if (sc && sc.path && !watchState.has(sc.path)) watchState.set(sc.path, sc.kind);
+    if (!lastScanAt && sc && sc.kind === 'scan' && sc.time) lastScanAt = sc.time;
+  }
+  let watching = 0;
+  for (const k of watchState.values()) if (k === 'watch') watching += 1;
+  const scanTxt = lastScanAt ? new Date(lastScanAt).toLocaleTimeString() : '尚無（有檔案變動才掃）';
+  const meta = document.createElement('div');
+  meta.className = 'kpi-meta';
+  meta.textContent = '👁 監聽 ' + watching + ' 個 worktree · 最後掃描 ' + scanTxt;
+  box.appendChild(meta);
+
+  document.getElementById('empty-state').hidden = total > 0;
+  if (!total) return;
+  const sWrap = document.createElement('div');
+  sWrap.id = 'sec-serious';
+  renderSection(sWrap, '嚴重', 'serious', serious, true);
+  const nWrap = document.createElement('div');
+  nWrap.id = 'sec-normal';
+  renderSection(nWrap, '注意', 'normal', normal, false);
+  el.appendChild(sWrap);
+  el.appendChild(nWrap);
+}
+
+function countOf(groups) {
+  let n = 0;
+  for (const [, agents] of Object.entries(groups)) for (const [, fs2] of Object.entries(agents)) n += fs2.length;
+  return n;
+}
+
+// 已修正（重掃後消失的 finding）
+function renderResolved(list) {
+  const el = document.getElementById('resolved');
+  el.textContent = '';
+  if (!list || !list.length) return;
+  const det = document.createElement('details');
+  persistDetails(det, 'resolved', false);
+  const sum = document.createElement('summary');
+  sum.textContent = '✅ 已修正（' + list.length + '）';
+  det.appendChild(sum);
+  for (const f of list.slice(0, 20)) {
+    const row = document.createElement('div');
+    row.className = 'row low';
+    const t = document.createElement('div');
+    t.textContent = f.title || f.rule;
+    row.appendChild(t);
+    const loc = document.createElement('div');
+    loc.className = 'loc';
+    loc.textContent = (f.resolvedAt ? new Date(f.resolvedAt).toLocaleTimeString() + ' 修正 · ' : '') + (f.target || '?') + ':' + (f.line ?? '?');
+    row.appendChild(loc);
+    det.appendChild(row);
+  }
+  el.appendChild(det);
+}
+
+// 掃描記錄（證明每次修改都有掃）
+function renderScans(scans) {
+  const el = document.getElementById('scanlog');
+  el.textContent = '';
+  if (!scans || !scans.length) return;
+  const det = document.createElement('details');
+  persistDetails(det, 'scanlog', false);
+  const sum = document.createElement('summary');
+  sum.textContent = '📋 最近掃描記錄（' + scans.length + '）';
+  det.appendChild(sum);
+  for (const s of scans.slice(0, 15)) {
+    const row = document.createElement('div');
+    row.className = 'scan';
+    const time = s.time ? new Date(s.time).toLocaleTimeString() : '?';
+    let desc;
+    if (s.kind === 'watch') desc = '👁 ' + (s.note || '監聽') + '：' + (s.path || '');
+    else if (s.kind === 'unwatch') desc = '👁‍🗨 ' + (s.note || '停止監聽') + '：' + (s.path || s.worktreeId || '');
+    else if (s.kind === 'skip') desc = '⏭ ' + (s.note || '跳過') + '：' + (s.path || '');
+    else if (s.error) desc = '⚠️ 掃描失敗：' + (s.path || '?') + '（' + s.error + '）';
+    else desc = (s.count > 0 ? '🔴 ' : '✅ ') + (s.path || '?') + ' · ' + (s.count || 0) + ' 個問題 · ' + (s.layers || []).join('+') + ' · ' + (s.elapsedMs ?? '?') + 'ms'
+      + (s.llmError ? '\\n    ⚠️ LLM：' + String(s.llmError).slice(0, 200) : '');
+    if (s.llmError) row.style.whiteSpace = 'pre-line';
+    row.textContent = time + ' ' + desc;
+    det.appendChild(row);
+  }
+  el.appendChild(det);
+}
+
+// severity 過濾 chips
+document.getElementById('chips').addEventListener('click', (ev) => {
+  const chip = ev.target.closest('.chip');
+  if (!chip || !chip.dataset.f) return; // 動作鈕（已讀/重啟）不參與過濾
+  for (const c of document.querySelectorAll('.chip')) c.classList.toggle('active', c === chip);
+  const f = chip.dataset.f;
+  const s = document.getElementById('sec-serious');
+  const n = document.getElementById('sec-normal');
+  if (s) s.style.display = (f === 'normal') ? 'none' : '';
+  if (n) n.style.display = (f === 'serious') ? 'none' : '';
+});
+
+setStatus(DATA.generatedAt
+  ? '資料產生於 ' + new Date(DATA.generatedAt).toLocaleTimeString()
+  : '尚無掃描資料');
+renderMain(DATA.groups);
+renderResolved(DATA.resolved);
+renderScans(DATA.scans);
+updateUnreadCount();
+persistDetails(document.getElementById('settings-card'), 'settings', false); // 設定卡折疊狀態跨重烤保留
+
+// 全部已讀：把目前所有 finding 標進 readSet，拔掉所有 NEW 徽章
+document.getElementById('mark-all-read').addEventListener('click', (ev) => {
+  ev.stopPropagation(); // 別觸發 chips 的 severity 過濾
+  for (const agents of Object.values(DATA.groups || {})) {
+    for (const fs2 of Object.values(agents || {})) {
+      for (const f of fs2) readSet[keyOf(f)] = true;
+    }
+  }
+  LS.set('vg.read', readSet);
+  for (const b of document.querySelectorAll('.badge-new')) b.remove();
+  updateUnreadCount();
+});
+
+// 捲動位置：變動時存、重烤後還原
+window.addEventListener('scroll', () => LS.set('vg.scroll', window.scrollY), { passive: true });
+window.scrollTo(0, LS.get('vg.scroll', 0));
+
+// 通知開關：worker 每次通知前讀 stateFile（內容 'off' = 關，其餘/不存在 = 開），
+// panel 沒有寫入通道，用 shell 指令 printf 寫檔（sq 跳脫）
+(function initNotifyToggles() {
+  const master = document.getElementById('notify-toggle');
+  const settings = DATA.settings || {};
+  master.checked = settings.notify !== false;
+  async function persist() {
+    if (!settings.stateFile) { setStatus('面板資料不含 stateFile（worker 版本太舊）——請 toggle 插件開關重載'); return; }
+    const cmd = "printf '" + (master.checked ? 'on' : 'off') + "' > " + sq(settings.stateFile);
+    let sent = false;
+    for (const [wt, t] of Object.entries(DATA.terminals || {})) {
+      if (t.shell) { const r = await sendToTerminal(cmd, wt, 'shell'); if (r.ok) { sent = true; break; } }
+    }
+    setStatus(sent
+      ? '✅ 通知設定已更新（即時生效；下次重烤面板後開關狀態同步）'
+      : '找不到 shell terminal——請手動在任一終端執行：' + cmd);
+  }
+  master.addEventListener('change', persist);
+})();
+
+// LLM 掃描開關：走 worker API（bareCurl 信差）；worker 每次掃描前讀 .llm-scan-state
+(function initLlmScanToggle() {
+  const el = document.getElementById('llm-scan-toggle');
+  if (!el) return;
+  const settings = DATA.settings || {};
+  el.checked = settings.llmScanEnabled !== false;
+  el.addEventListener('change', async () => {
+    const via = bareCurl({ kind: 'llmScan', value: el.checked ? 'on' : 'off' });
+    if (!via) { setStatus('worker 尚未回報 API 位址——等它掃一次後重開面板'); return; }
+    const r = await sendShellCommand(via, null);
+    setStatus(r.ok
+      ? (el.checked ? '✅ LLM 掃描已開啟（下次掃描生效）' : '✅ LLM 掃描已關閉——之後只跑本地 regex，不叫 AI')
+      : '送出失敗——請手動在任一終端執行：' + via);
+  });
+})();
+
+// 掃全專案：請 worker 背景走訪所有監聽中 worktree 的支援檔
+(function initScanAll() {
+  const el = document.getElementById('scan-all');
+  if (!el) return;
+  el.addEventListener('click', async () => {
+    const via = bareCurl({ kind: 'scanAll' });
+    if (!via) { setStatus('worker 尚未回報 API 位址——等它掃一次後重開面板'); return; }
+    const r = await sendShellCommand(via, null);
+    setStatus(r.ok ? '✅ 已請 worker 開始全專案掃描（背景執行，進度看掃描記錄）' : '送出失敗——請手動在任一終端執行：' + via);
+  });
+})();
+
+// L3 LLM 框架/模型選擇：寫 .llm-state「框架:模型」（模型空 = CLI 預設），worker 每次 LLM 掃描前讀
+(function initLlmPicker() {
+  // 每個框架的模型預設清單（'' = CLI 預設）；要加模型改這裡
+  const MODELS = {
+    claude: [['', 'haiku（預設）'], ['haiku', 'haiku'], ['sonnet', 'sonnet'], ['opus', 'opus']],
+    codex: [['', 'CLI 預設'], ['gpt-5-codex', 'gpt-5-codex'], ['gpt-5', 'gpt-5'], ['codex-mini-latest', 'codex-mini-latest']],
+    gemini: [['', 'CLI 預設'], ['gemini-2.5-flash', 'gemini-2.5-flash'], ['gemini-2.5-pro', 'gemini-2.5-pro']]
+  };
+  const fw = document.getElementById('llm-framework');
+  const model = document.getElementById('llm-model');
+  const llm = (DATA.settings && DATA.settings.llm) || {};
+  function rebuildModels(selected) {
+    model.textContent = '';
+    const list = MODELS[fw.value] || [['', 'CLI 預設']];
+    for (const [val, label] of list) {
+      const o = document.createElement('option');
+      o.value = val; o.textContent = label;
+      model.appendChild(o);
+    }
+    model.value = selected || '';
+    if (model.value !== (selected || '')) model.value = ''; // 舊值不在清單 → 回預設
+  }
+  fw.value = llm.framework || 'claude';
+  rebuildModels(llm.model || '');
+  async function persist() {
+    if (!llm.stateFile) { setStatus('面板資料不含 .llm-state 路徑（worker 版本太舊）——請 toggle 插件開關重載'); return; }
+    const m = model.value;
+    const cmd = "printf '" + fw.value + (m ? ':' + m : '') + "' > " + sq(llm.stateFile);
+    let sent = false;
+    for (const [wt, t] of Object.entries(DATA.terminals || {})) {
+      if (t.shell) { const r = await sendToTerminal(cmd, wt, 'shell'); if (r.ok) { sent = true; break; } }
+    }
+    setStatus(sent
+      ? '✅ L3 掃描改用它：' + fw.value + (m ? ' / ' + m : '（CLI 預設模型）') + '（即時生效；留意掃描記錄有無 LLM_FAILED）'
+      : '找不到 shell terminal——請手動在任一終端執行：' + cmd);
+  }
+  fw.addEventListener('change', () => { rebuildModels(''); persist(); });
+  model.addEventListener('change', persist);
+})();
+
+// 重啟 worker：touch 插件目錄的 main.mjs 觸發 Orca dev watcher 重載（或請使用者到設定頁 toggle）
+// 注意：本檔是 template literal，regex 反斜線會被吃掉——一律避免 regex，用字串函式
+async function restartWorker() {
+  // 不做 exit 式重啟：worker 自行退出會吃 host 的 maxRestarts 失敗額度，用完整個插件標 errored
+  //（2026-08-31 實際發生）。唯一安全且會重置錯誤計數的重啟 = 設定頁 toggle。
+  setStatus('重啟方式：Settings → Plugins 關掉 VibeGuard → 等 10 秒 → 開（唯一安全、會重置錯誤計數的方式）');
+}
+document.getElementById('restart-worker').addEventListener('click', restartWorker);
+
+// 即時 dashboard：panel 是快照，真即時在內嵌瀏覽器（orca goto 開 panel-server 的頁）
+document.getElementById('open-dashboard').addEventListener('click', async () => {
+  const u = DATA.settings && DATA.settings.dashboardUrl;
+  if (!u) { setStatus('worker 尚未回報 dashboard 位址——等它掃一次後重開面板'); return; }
+  const r = await sendShellCommand('orca goto --url ' + sq(u), null);
+  if (r.ok) setStatus('✅ 已在內嵌瀏覽器開啟即時 dashboard');
+  else setStatus('找不到可用終端——請手動在任一終端執行：orca goto --url ' + sq(u));
+});
+
+// worker 心跳：panel 是重烤產物，DATA.generatedAt = worker 最後活動時間。
+// 超過 5 分鐘沒活動 → 紅色警示 + 重新啟用按鈕
+(function initHeartbeat() {
+  const at = DATA.generatedAt ? Date.parse(DATA.generatedAt) : 0;
+  const staleMin = at ? Math.round((Date.now() - at) / 60000) : Infinity;
+  if (staleMin < 5) return;
+  const warn = document.createElement('div');
+  warn.className = 'worker-dead';
+  const msg = document.createElement('span');
+  msg.textContent = '⚠️ worker 疑似停止（' + (at ? staleMin + ' 分鐘無活動' : '從未活動') + '），掃描不會更新';
+  warn.appendChild(msg);
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+  btn.type = 'button';
+  btn.textContent = '🔄 重新啟用';
+  btn.title = 'touch 插件目錄觸發 Orca dev watcher 重載 worker';
+  btn.addEventListener('click', restartWorker);
+  warn.appendChild(btn);
+  document.getElementById('status').appendChild(warn);
+})();
+
+// 資料齡時鐘（純顯示）：這頁資料是幾秒前產生的。
+// 注意：不做頁內 location.reload——srcdoc iframe 的導航被 Orca NavigationRegistry
+// 攔截，reload 嘗試會把 frame 打進壞狀態（pong 停止回應 → watchdog 40 秒判死，實測確診）。
+// 資料更新一律靠 worker 重烤 panel.html → dev watcher → Orca 重新掛載本頁。
+(function initDataAge() {
+  const loadedAt = Date.now();
+  const ageEl = document.createElement('span');
+  ageEl.id = 'data-age';
+  document.getElementById('status').appendChild(ageEl);
+  const dataAt = DATA.generatedAt ? Date.parse(DATA.generatedAt) : loadedAt;
+  setInterval(() => {
+    const sec = Math.round((Date.now() - dataAt) / 1000);
+    const txt = sec < 90 ? sec + ' 秒前' : Math.round(sec / 60) + ' 分鐘前';
+    ageEl.textContent = '（' + txt + '）';
+  }, 1000);
+})();
+</script>
+</body>
+</html>
+`;

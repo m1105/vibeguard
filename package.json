@@ -1,0 +1,11 @@
+{
+  "name": "vibeguard-orca",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 生成代碼即時安全守護 Orca 插件：L1 本地快篩 + L2/L3 Claude 語意審查。",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}

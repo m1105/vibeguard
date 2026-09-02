@@ -1,0 +1,10 @@
+.orca-api-ref/
+node_modules/
+.DS_Store
+.omc/
+.serena/
+crash.log
+.notify-state
+.llm-state
+.dash-token
+.llm-token
