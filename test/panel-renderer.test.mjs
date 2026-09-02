@@ -175,7 +175,7 @@ test('buildPanelHtml: 重啟按鈕常駐 + 掃描狀態列', () => {
 
 test('buildPanelHtml: worker 心跳警示 + 重新啟用按鈕（只指引 toggle，不做 exit 式重啟）', () => {
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
-  assert.ok(html.includes('worker 疑似停止'));
+  assert.ok(html.includes("t('workerDead'"), '心跳警示走字典（安裝版是快照，文案要引導先切分頁）');
   assert.ok(html.includes('重新啟用'));
   assert.ok(html.includes("t('restartHow')"), '重啟只能指引使用者 toggle（worker 自行 exit 會吃 host 的 maxRestarts 額度）');
   assert.ok(!html.includes('process.exit'), '面板不得觸發 exit 式重啟');
@@ -348,4 +348,18 @@ test('buildPanelHtml: 掃描記錄的 note 優先用 noteKey 翻譯（舊記錄�
   const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [] });
   assert.ok(html.includes('noteKey'), '要看 noteKey');
   assert.ok(html.includes('noteParams'), '要帶 noteParams');
+});
+
+// ── 安裝版靜態啟動器（panel.html 內嵌 static:true；worker 在安裝模式不重烤）──
+test('安裝版靜態面板：顯示限制說明、隱藏資料區與心跳；位址用 $(cat ~/.config/vibeguard/…) 在 shell 端展開；有「通知時開即時頁」開關', () => {
+  const html = buildPanelHtml({ generatedAt: null, groups: {}, scans: [], static: true });
+  assert.ok(html.includes('"static":true'));
+  assert.ok(html.includes('id="static-notice"') && html.includes('data-i18n="staticNotice"'), '靜態說明');
+  assert.ok(html.includes('DATA.static'), '要看 DATA.static 分流');
+  assert.ok(html.includes('$HOME/.config/vibeguard/'), '位址 shell 端展開（面板檔不含 token）');
+  assert.ok(html.includes("stateFileSh('api-url')") && html.includes('$(cat '), 'API 位址 $(cat ~/.config/vibeguard/api-url)');
+  assert.ok(html.includes("stateFileSh('dashboard-url')"), 'dashboard 位址 $(cat ~/.config/vibeguard/dashboard-url)');
+  assert.ok(!html.includes('noDashboardUrl'), '🚀 不再因缺內嵌位址而拒絕');
+  assert.ok(html.includes('id="notify-open-toggle"') && html.includes("kind: 'notifyOpenDashboard'"), '通知時自動開啟即時頁');
+  assert.ok(!/token=[0-9a-f]{32}/.test(html), '靜態模板不得含 token');
 });

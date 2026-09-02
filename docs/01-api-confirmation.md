@@ -134,3 +134,14 @@
 ## 15. `terminal list` 的 `agentIdentity` 欄位（實測 2026-09-02，Orca 1.4.193）
 
 `orca terminal list --json` 的每個 terminal 物件在 1.4.193 多了 `agentIdentity`（實測值：`"claude"`、`"kimi"`；純 shell 終端沒有這個欄位）。這是**確定訊號**，比 §11 之前只能看 `title`／`preview` 的 TUI 特徵可靠得多。`main.mjs` 的 `isAgentTerminal` 現在先看它、沒有才退回啟發式（舊版 Orca 相容）。其餘欄位（`handle`、`worktreeId`、`worktreePath`、`title`、`preview`、`connected`、`writable`）不變。
+
+## 16. 安裝版的完整性驗證與面板重讀時機（實測 2026-09-02，Orca 1.4.193，asar 源碼）
+
+- **安裝版插件目錄是雜湊快照**：`<userData>/plugins/<publisher.id>/<64 hex contentHash>/`，旁邊 `current` 指標檔；`plugins.lock.json` 記 `contentHash`。`hashPluginTree(root)` 逐檔雜湊（相對路徑 + 大小 + 內容；只跳過根目錄 `.git`；dot 檔照算；**禁 symlink**；上限 2000 檔／50MB）。
+- **驗證時機**：`PluginContentVerifier.verify(plugin)` 在 worker `ensure()`（spawn 前）與 `readPanelEntry`（面板載入前）都會呼叫；結果以 `(pluginKey, rootDir, contentHash)` 快取到 Orca 行程結束。devPluginPaths 的插件 `contentHash === null` → 跳過驗證。**結論：安裝版的插件目錄不可寫**（寫了現在不會立刻壞，Orca 重啟後 `failed integrity verification` → worker 起不來、面板載不進）。
+- **面板重讀時機**：`PluginPanel` 在 `pluginsApi.onChanged` 事件時重跑 `readPanelEntry`，HTML 不同才重掛；該事件來自主程序 `pluginService.notifyChanged`，呼叫點只有：worker 執行狀態改變（`onStateChanged`）、插件清單 `refresh()`、`deactivatePlugin`。**沒有任何 host method 或 CLI 能觸發**；`settings.set`／`storage.set` 都不會。切分頁 = 元件重掛 = 重讀。
+- **面板 CSP 全文**：`default-src 'none'; connect-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'`；iframe `sandbox="allow-scripts"`。所以面板也不能內嵌即時頁（frame-src 落回 default-src 'none'）。
+- **面板可呼叫的 action**：`PLUGIN_HOST_API_V0` 中 `panel: true` 的只有 `workspace.readContext`、`terminal.sendText`、`notifications.show`。host API 全清單 13 個：上述 3 個 + `storage.get/set/delete/keys` + `secrets.get/set/delete` + `settings.get/set`（capability `settings:own`）+ `events.subscribe`。
+- **`notifications.show` 參數只有 `title`（≤120）與 `body`（≤1000）**，沒有點擊動作。
+- **安裝方式**：Install 對話框的 Git 來源要求 `url#ref`（ref 必填、tag 或 commit）；Marketplace 條目 `source.ref` 任意字串（分支可）。`checkoutPluginGitSource`：ref 是 40 hex → `git init` + `fetch --depth 1 origin <sha>` + `checkout FETCH_HEAD`；否則 `git clone --quiet --depth 1 --branch <ref>`。複製進快照時濾掉 `.git`。
+- **worker 自行 exit 仍計入 maxRestarts**（8/31 實測是 `exit(0)`）；host 主動 reap／deactivate 才不計。

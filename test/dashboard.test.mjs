@@ -80,3 +80,10 @@ test('dashboard: 靜態字串走 data-i18n；關鍵動態訊息走 t()', () => {
   }
   assert.ok(html.includes('noteKey'), '掃描記錄 note 優先用 noteKey 翻譯');
 });
+
+test('dashboard: 通知時自動開啟即時頁的開關（api notifyOpenDashboard）', () => {
+  const html = buildDashboardHtml();
+  assert.ok(html.includes('id="notify-open-toggle"'));
+  assert.ok(html.includes("api('notifyOpenDashboard'"));
+  assert.ok(html.includes("t('notifyOpenDashboardOn')"));
+});

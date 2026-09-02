@@ -120,6 +120,7 @@ test('repo-hygiene：panel.html 只能是空資料模板（worker 會把真實 f
   assert.deepEqual(data.groups, {}, 'panel.html 含真實 findings——提交前請還原成空模板');
   assert.deepEqual(data.scans ?? [], [], 'panel.html 含掃描記錄（有本機路徑）——提交前請還原成空模板');
   assert.ok(!('terminals' in data) || Object.keys(data.terminals).length === 0);
+  assert.equal(data.static, true, 'commit 的 panel.html 必須是安裝版靜態啟動器模板（static:true）——安裝版不重烤，使用者看到的就是它');
 });
 
 test('repo-hygiene：.vibeguard-learned.json 若進版控，target 必須是 repo 相對路徑', () => {

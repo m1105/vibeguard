@@ -176,6 +176,10 @@ const TEMPLATE_HEAD = `<!doctype html>
       <span data-i18n="notifyToggle">🔔 啟用通知</span>
       <label class="switch"><input type="checkbox" id="notify-toggle"><span class="slider"></span></label>
     </div>
+    <div class="setting-row" data-i18n-title="notifyOpenDashboardTitle" title="跳出嚴重問題的桌面通知時，順便在 Orca 內嵌瀏覽器開啟（或切到）即時頁">
+      <span data-i18n="notifyOpenDashboard">🚀 通知時自動開啟即時頁</span>
+      <label class="switch"><input type="checkbox" id="notify-open-toggle"><span class="slider"></span></label>
+    </div>
     <div class="setting-row" data-i18n-title="llmPickerTitle" title="背景掃描用的 LLM（便宜模型即可）">
       <span data-i18n="llmPicker">🧠 L3 語意審查</span>
       <span class="llm-picker">
@@ -599,6 +603,8 @@ function syncSettings() {
   const st = DATA.settings || {};
   const master = document.getElementById('notify-toggle');
   if (document.activeElement !== master) master.checked = st.notify !== false;
+  const openT = document.getElementById('notify-open-toggle');
+  if (document.activeElement !== openT) openT.checked = st.notifyOpenDashboard === true;
   const fw = document.getElementById('llm-framework');
   const model = document.getElementById('llm-model');
   function modelsFor(fwName) {
@@ -628,6 +634,9 @@ function syncSettings() {
     settingsBound = true;
     master.addEventListener('change', async () => {
       report(await api('notify', { value: master.checked ? 'on' : 'off' }), t('dashNotifyUpdated'));
+    });
+    openT.addEventListener('change', async () => {
+      report(await api('notifyOpenDashboard', { value: openT.checked ? 'on' : 'off' }), openT.checked ? t('notifyOpenDashboardOn') : t('notifyOpenDashboardOff'));
     });
     const persistLlm = async () => {
       report(await api('llm', { framework: fw.value, model: model.value }), t('dashLlmSwitched', { fw: fw.value, model: model.value ? ' / ' + model.value : t('modelDefaultParen') }));

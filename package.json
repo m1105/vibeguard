@@ -1,6 +1,6 @@
 {
   "name": "vibeguard-orca",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "VibeGuard for Orca — real-time security screening for AI-generated code (Orca plugin). Local L1/L2 regex + optional LLM semantic review. Advisory tool: expect false positives.",

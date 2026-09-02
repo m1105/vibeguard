@@ -179,6 +179,8 @@ const TEMPLATE_HEAD = `<!doctype html>
   .worker-dead { background: var(--crit-soft); border: 1px solid rgba(229,72,77,.35); border-radius: 10px;
     padding: 8px 10px; margin: 8px 0; font-size: 12px; color: var(--fg);
     display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .notice { background: var(--accent-soft); border: 1px solid rgba(59,130,246,.35); border-radius: 10px;
+    padding: 9px 11px; margin: 8px 0; font-size: 12px; line-height: 1.55; color: var(--fg); }
   ::-webkit-scrollbar { width: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px;
     border: 3px solid transparent; background-clip: content-box; }
@@ -195,6 +197,7 @@ const TEMPLATE_HEAD = `<!doctype html>
   <span id="unread-count"></span>
 </header>
 <div id="status" data-i18n-title="statusTitle" title="面板資料為掃描時快照；關閉再開面板取得最新"><span id="status-msg"></span><span id="data-age"></span></div>
+<div id="static-notice" class="notice" hidden data-i18n="staticNotice">安裝版的側欄面板無法自動更新；請按 🚀 開啟即時頁。</div>
 <div id="summary"></div>
 <div class="chips" id="chips">
   <button class="chip active" data-f="all" type="button" data-i18n="chipAll">全部</button>
@@ -212,6 +215,10 @@ const TEMPLATE_HEAD = `<!doctype html>
     <div class="setting-row" data-i18n-title="notifyToggleTitle" title="嚴重問題的桌面通知；關掉後照樣掃、照樣記錄，只是不跳通知">
       <span data-i18n="notifyToggle">🔔 啟用通知</span>
       <label class="switch"><input type="checkbox" id="notify-toggle"><span class="slider"></span></label>
+    </div>
+    <div class="setting-row" data-i18n-title="notifyOpenDashboardTitle" title="跳出嚴重問題的桌面通知時，順便在 Orca 內嵌瀏覽器開啟（或切到）即時頁">
+      <span data-i18n="notifyOpenDashboard">🚀 通知時自動開啟即時頁</span>
+      <label class="switch"><input type="checkbox" id="notify-open-toggle"><span class="slider"></span></label>
     </div>
     <div class="setting-row" data-i18n-title="llmScanToggleTitle" title="關掉後掃描只跑本地 regex（L1/L2），完全不叫 LLM——省 AI 額度；隨時可再開">
       <span data-i18n="llmScanToggle">🤖 LLM 掃描</span>
@@ -431,11 +438,19 @@ function sq(s) { return "'" + String(s).replace(/'/g, "'\\\\''") + "'"; } // she
 // 忽略/免檢/設定：優先走 worker 的 /api/action（curl 一行，worker 端驗證+寫檔+立即重烤）；
 // 沒有 dashboardUrl（server 沒起）才退回 printf 直寫檔案
 function ignoreFilePath(f) { return clean(f.repoRoot, 300) + '/.vibeguard-ignore'; }
-function bareCurl(bodyObj) {
+// 安裝版靜態面板（DATA.static）拿不到 worker 內嵌的位址：worker 把 dashboard-url / api-url 落在
+// ~/.config/vibeguard，指令改用 $(cat …) 在 shell 端展開——面板檔本身不含任何 token
+function stateFileSh(name) { return '"$HOME/.config/vibeguard/' + name + '"'; }
+function apiUrlSh() {
   const du = String((DATA.settings && DATA.settings.dashboardUrl) || '');
-  if (!du.length) return null;
-  const api = du.replace('/?token=', '/api/action?token=');
-  return 'curl -s -X POST ' + sq(api) + " -H 'Content-Type: application/json' -d " + sq(JSON.stringify(bodyObj));
+  return du.length ? sq(du.replace('/?token=', '/api/action?token=')) : '"$(cat ' + stateFileSh('api-url') + ')"';
+}
+function dashboardUrlSh() {
+  const du = String((DATA.settings && DATA.settings.dashboardUrl) || '');
+  return du.length ? sq(du) : '"$(cat ' + stateFileSh('dashboard-url') + ')"';
+}
+function bareCurl(bodyObj) {
+  return 'curl -s -X POST ' + apiUrlSh() + " -H 'Content-Type: application/json' -d " + sq(JSON.stringify(bodyObj));
 }
 function actionCurl(kind, f) {
   return bareCurl({ kind: kind, rule: clean(f.rule, 100), target: clean(f.target, 400), line: f.line });
@@ -819,6 +834,7 @@ document.getElementById('chips').addEventListener('click', (ev) => {
 function renderHeartbeat() {
   const old = document.getElementById('worker-dead');
   if (old) old.remove();
+  if (DATA.static) return; // 靜態啟動器沒有資料時間，心跳判斷無意義
   const at = DATA.generatedAt ? Date.parse(DATA.generatedAt) : 0;
   const staleMin = at ? Math.round((Date.now() - at) / 60000) : Infinity;
   if (staleMin < 5) return;
@@ -841,6 +857,14 @@ function renderHeartbeat() {
 // 全部區塊重渲染（初始化與切語言共用）
 function renderAll() {
   applyI18n();
+  // 安裝版靜態啟動器：沒有資料區，只留說明 + 設定 + 🚀/🔍 動作
+  const isStatic = !!DATA.static;
+  document.getElementById('static-notice').hidden = !isStatic;
+  for (const id of ['summary', 'main', 'empty-state', 'resolved', 'scanlog', 'unread-count']) {
+    const el = document.getElementById(id);
+    if (el && isStatic) { el.hidden = true; el.textContent = ''; }
+  }
+  if (isStatic) { setStatus(''); initLlmPicker.rebuild && initLlmPicker.rebuild(); return; }
   setStatus(DATA.generatedAt
     ? t('statusGenerated', { time: new Date(DATA.generatedAt).toLocaleTimeString() })
     : t('statusNoData'));
@@ -868,25 +892,39 @@ document.getElementById('mark-all-read').addEventListener('click', (ev) => {
 // 捲動位置：變動時存、重烤後還原
 window.addEventListener('scroll', () => LS.set('vg.scroll', window.scrollY), { passive: true });
 
-// 設定類動作的信差：優先 worker /api/action（curl 借 agent 終端 ! 執行）；沒有 API 位址才退回 printf 直寫 state 檔
-async function sendSetting(bodyObj, fallbackCmd) {
-  const via = bareCurl(bodyObj);
-  const cmd = via || fallbackCmd;
-  if (!cmd) return { ok: false, reason: 'no-api' };
+// 設定類動作的信差：worker /api/action（curl 借 agent 終端 ! 執行；位址內嵌或 $(cat …) 展開）。
+// 舊備援（printf 直寫 state 檔）只在 API 路徑失敗時當手動指令提示
+async function sendSetting(bodyObj) {
+  const cmd = bareCurl(bodyObj);
   const r = await sendShellCommand(cmd, null);
   return { ok: !!r.ok, cmd: cmd, reason: r.reason };
 }
+function stateFileWriteCmd(settingsPath, name, value) {
+  return "printf '" + value + "' > " + (settingsPath ? sq(settingsPath) : stateFileSh(name));
+}
 
-// 通知開關：worker 每次通知前讀 stateFile（內容 'off' = 關，其餘/不存在 = 開）
+// 通知開關：worker 每次通知前讀 .notify-state（內容 'off' = 關，其餘/不存在 = 開）
 (function initNotifyToggles() {
   const master = document.getElementById('notify-toggle');
   const settings = DATA.settings || {};
   master.checked = settings.notify !== false;
   master.addEventListener('change', async () => {
-    const fallback = settings.stateFile ? "printf '" + (master.checked ? 'on' : 'off') + "' > " + sq(settings.stateFile) : null;
-    const r = await sendSetting({ kind: 'notify', value: master.checked ? 'on' : 'off' }, fallback);
-    if (r.reason === 'no-api') { setStatus(t('noStateFile')); return; }
-    setStatus(r.ok ? t('notifyUpdated') : t('noShellManual', { cmd: r.cmd }));
+    const r = await sendSetting({ kind: 'notify', value: master.checked ? 'on' : 'off' });
+    setStatus(r.ok ? t('notifyUpdated') : t('noShellManual', { cmd: stateFileWriteCmd(settings.stateFile, '.notify-state', master.checked ? 'on' : 'off') }));
+  });
+})();
+
+// 通知時自動開啟即時頁（安裝版側欄不會自動更新，使用者要「有通知就跳出來」）
+(function initNotifyOpenToggle() {
+  const el = document.getElementById('notify-open-toggle');
+  if (!el) return;
+  const settings = DATA.settings || {};
+  el.checked = settings.notifyOpenDashboard === true;
+  el.addEventListener('change', async () => {
+    const r = await sendSetting({ kind: 'notifyOpenDashboard', value: el.checked ? 'on' : 'off' });
+    setStatus(r.ok
+      ? (el.checked ? t('notifyOpenDashboardOn') : t('notifyOpenDashboardOff'))
+      : t('sendFailedManual', { cmd: r.cmd }));
   });
 })();
 
@@ -897,12 +935,10 @@ async function sendSetting(bodyObj, fallbackCmd) {
   const settings = DATA.settings || {};
   el.checked = settings.llmScanEnabled !== false;
   el.addEventListener('change', async () => {
-    const via = bareCurl({ kind: 'llmScan', value: el.checked ? 'on' : 'off' });
-    if (!via) { setStatus(t('noApiUrl')); return; }
-    const r = await sendShellCommand(via, null);
+    const r = await sendSetting({ kind: 'llmScan', value: el.checked ? 'on' : 'off' });
     setStatus(r.ok
       ? (el.checked ? t('llmScanOn') : t('llmScanOff'))
-      : t('sendFailedManual', { cmd: via }));
+      : t('sendFailedManual', { cmd: r.cmd }));
   });
 })();
 
@@ -911,10 +947,8 @@ async function sendSetting(bodyObj, fallbackCmd) {
   const el = document.getElementById('scan-all');
   if (!el) return;
   el.addEventListener('click', async () => {
-    const via = bareCurl({ kind: 'scanAll' });
-    if (!via) { setStatus(t('noApiUrl')); return; }
-    const r = await sendShellCommand(via, null);
-    setStatus(r.ok ? t('scanAllStarted') : t('sendFailedManual', { cmd: via }));
+    const r = await sendSetting({ kind: 'scanAll' });
+    setStatus(r.ok ? t('scanAllStarted') : t('sendFailedManual', { cmd: r.cmd }));
   });
 })();
 
@@ -947,12 +981,10 @@ function initLlmPicker() {
   initLlmPicker.rebuild = () => rebuildModels(model.value);
   async function persist() {
     const m = model.value;
-    const fallback = llm.stateFile ? "printf '" + fw.value + (m ? ':' + m : '') + "' > " + sq(llm.stateFile) : null;
-    const r = await sendSetting({ kind: 'llm', framework: fw.value, model: m }, fallback);
-    if (r.reason === 'no-api') { setStatus(t('noLlmStateFile')); return; }
+    const r = await sendSetting({ kind: 'llm', framework: fw.value, model: m });
     setStatus(r.ok
       ? t('llmSwitched', { fw: fw.value, model: m ? ' / ' + m : t('modelDefaultParen') })
-      : t('noShellManual', { cmd: r.cmd }));
+      : t('noShellManual', { cmd: stateFileWriteCmd(llm.stateFile, '.llm-state', fw.value + (m ? ':' + m : '')) }));
   }
   fw.addEventListener('change', () => { rebuildModels(''); persist(); });
   model.addEventListener('change', persist);
@@ -970,11 +1002,8 @@ initLlmPicker();
     LANG = resolveLang(v, navigator.language || '');
     renderAll();
     let msg = t('langChanged', { name: I18N.names[LANG] });
-    const via = bareCurl({ kind: 'locale', value: v });
-    if (via) {
-      const r = await sendShellCommand(via, null);
-      if (!r.ok) msg += t('langSyncFailed', { cmd: via });
-    }
+    const r = await sendSetting({ kind: 'locale', value: v });
+    if (!r.ok) msg += t('langSyncFailed', { cmd: r.cmd });
     setStatus(msg);
   });
 })();
@@ -988,9 +1017,7 @@ document.getElementById('restart-worker').addEventListener('click', restartWorke
 
 // 即時 dashboard：panel 是快照，真即時在內嵌瀏覽器（orca goto 開 panel-server 的頁）
 document.getElementById('open-dashboard').addEventListener('click', async () => {
-  const u = DATA.settings && DATA.settings.dashboardUrl;
-  if (!u) { setStatus(t('noDashboardUrl')); return; }
-  const cmd = 'orca goto --url ' + sq(u);
+  const cmd = 'orca goto --url ' + dashboardUrlSh();
   const r = await sendShellCommand(cmd, null);
   if (r.ok) setStatus(t('dashboardOpened'));
   else setStatus(t('noTerminalManual', { cmd: cmd }));

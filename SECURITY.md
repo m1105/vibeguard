@@ -22,13 +22,13 @@ Code snippets shown in the panel (±1 line around each hit) go through the same 
 
 ## 3. Credentials and local state
 
-Everything below lives in the **plugin install directory** (not the repo) and is listed in `.gitignore`:
+Everything below lives in the **state directory `~/.config/vibeguard/`** (mode `0700`, files `0600`; override with `VIBEGUARD_STATE_DIR`). It is **never written into the plugin directory**: an installed plugin's directory is a content-hash snapshot that Orca verifies file by file before starting the worker and before loading the panel, so any write there breaks the plugin after the next Orca restart. The same names are also listed in `.gitignore` for the developer deploy folder.
 
 | File | Content | Sensitivity |
 |---|---|---|
-| `.llm-token` | Claude long-lived token from `claude setup-token` | **credential** — `chmod 600`; read before each scan; passed only as `CLAUDE_CODE_OAUTH_TOKEN` to the `claude` process; never logged, never embedded in the panel |
-| `.dash-token` | 32-hex random token for the local dashboard API | local auth secret; embedded in the panel data (which is local) so panel actions can call the API |
-| `.notify-state`, `.llm-state`, `.llm-scan-state`, `.locale` | `on`/`off`, `framework:model`, locale id | plain settings, not sensitive |
+| `.llm-token` | Claude long-lived token from `claude setup-token` | **credential** — `0600`; read before each scan; passed only as `CLAUDE_CODE_OAUTH_TOKEN` to the `claude` process; never logged, never embedded in the panel |
+| `.dash-token`, `dashboard-url`, `api-url` | 32-hex random token for the local dashboard API, and the two URLs that carry it | local auth secret; the developer-mode panel embeds it, the installed static panel reads it at click time via `$(cat …)` in the shell so the committed panel file contains no token |
+| `.notify-state`, `.llm-state`, `.llm-scan-state`, `.locale`, `.notify-open-dashboard` | `on`/`off`, `framework:model`, locale id | plain settings, not sensitive |
 | `.vibeguard-learned.json` (in each scanned repo) | rule + relative path + finding title | committed on purpose; contains finding titles, no code |
 
 The dashboard server: binds `127.0.0.1` only, requires the token on every request, rejects any request whose `Host` is not `127.0.0.1:<port>` (DNS rebinding) or whose `Origin` is not same-origin (CSRF), and sends no CORS headers.
@@ -79,13 +79,13 @@ VibeGuard 是**提醒**型掃描器：結果是線索不是判決，而且**會�
 
 ### 3. 憑證與本機狀態
 
-下列檔案都在**插件安裝目錄**（不是 repo），且都在 `.gitignore`：
+下列檔案都在**狀態目錄 `~/.config/vibeguard/`**（目錄 `0700`、檔案 `0600`；可用 `VIBEGUARD_STATE_DIR` 改位置），**絕不寫進插件目錄**：安裝版的插件目錄是內容雜湊快照，Orca 在 worker 起動與面板載入前逐檔驗證，寫任何東西進去 = Orca 重啟後插件載不起來。同名檔案也列在 `.gitignore`（給開發者部署資料夾用）。
 
 | 檔案 | 內容 | 敏感度 |
 |---|---|---|
-| `.llm-token` | `claude setup-token` 產生的長期 token | **憑證**——`chmod 600`；每次掃描前讀；只以 `CLAUDE_CODE_OAUTH_TOKEN` 傳給 `claude` 子行程；不記 log、不嵌進面板 |
-| `.dash-token` | 本機 dashboard API 的 32 hex 隨機 token | 本機認證密鑰；會嵌進面板資料（本機）讓面板動作能打 API |
-| `.notify-state`、`.llm-state`、`.llm-scan-state`、`.locale` | `on`／`off`、`框架:模型`、語系 id | 一般設定，不敏感 |
+| `.llm-token` | `claude setup-token` 產生的長期 token | **憑證**——`0600`；每次掃描前讀；只以 `CLAUDE_CODE_OAUTH_TOKEN` 傳給 `claude` 子行程；不記 log、不嵌進面板 |
+| `.dash-token`、`dashboard-url`、`api-url` | 本機 dashboard API 的 32 hex 隨機 token，以及帶著它的兩個 URL | 本機認證密鑰；開發者模式面板會內嵌，安裝版靜態面板在按下按鈕時由 shell 以 `$(cat …)` 讀取，commit 的面板檔本身不含 token |
+| `.notify-state`、`.llm-state`、`.llm-scan-state`、`.locale`、`.notify-open-dashboard` | `on`／`off`、`框架:模型`、語系 id | 一般設定，不敏感 |
 | `.vibeguard-learned.json`（在每個被掃 repo） | rule + 相對路徑 + finding 標題 | 刻意進 git；只有標題沒有程式碼 |
 
 dashboard server：只綁 `127.0.0.1`、每個請求都要 token、`Host` 不是 `127.0.0.1:<port>` 一律拒（防 DNS rebinding）、帶 `Origin` 必須同源（防 CSRF）、不發任何 CORS 頭。

@@ -47,6 +47,7 @@ No lint / build / typecheck. Zero dependencies, ESM, `.mjs`.
 8. **Sanitize everything that reaches a terminal** (`cleanField` / `clean`, `sq`); the worker only acts on findings present in memory.
 9. **LLM**: redact first (`redaction.mjs`), one call at a time, queue cap 4, cwd = scanned repo root, prompt via stdin, no automatic framework fallback, claude `--max-turns 1`, long-lived token from `.llm-token` when present.
 10. **Bake the panel only on meaningful change** (findings / resolved / issues / settings), throttled 5 s; scan-log-only changes never bake.
+11. **Never write into the plugin directory.** Installed plugins (Marketplace / git URL) live in a content-hash snapshot that Orca hash-verifies file by file before spawning the worker and before loading the panel (`hashPluginTree`, only `.git` skipped, dotfiles included; result cached until Orca restarts). All state goes to the state dir (`~/.config/vibeguard`, `deps.stateDir`); in installed mode (`detectInstallMode`) the worker does **not** bake `panel.html` — the committed `panel.html` is the static launcher (`static: true`) whose commands resolve the API address with `$(cat "$HOME/.config/vibeguard/api-url")`. The live dashboard is the only live UI for installed plugins; the sidebar panel reloads only on tab switch or worker state change, and nothing a plugin can call triggers that (docs/01 §16).
 
 ## Workflow
 

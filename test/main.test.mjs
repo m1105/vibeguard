@@ -55,6 +55,10 @@ function fakeDeps(overrides = {}) {
     listManagedWorktrees: async () => [], // 測試預設無既有 worktree；需要時覆寫
     listTerminalsFor: async () => ({ agent: null, shell: null }), // 測試預設查無 terminal；需要時覆寫
     systemLocale: 'zh-TW', // 通知/訊息語言跟隨系統；測試固定 zh-TW 才不受跑測試機器的 LANG 影響
+    stateDir: '/st', // 狀態目錄假路徑（真實預設 ~/.config/vibeguard；測試不得碰真目錄）
+    mkdir: async () => {},
+    writeFile: async () => {}, // 預設不落地；要驗寫檔的案例自行覆寫成記錄器
+    installMode: 'dev', // 預設 dev（會烤面板）；安裝模式案例自行覆寫
     deferred: [], // deferred 工作的 promise 收集器（測試 await Promise.all(deps.deferred) 等它跑完）
   };
   // 測試用 microtask 跑 deferred（可 await deps.deferred）；prod 預設 setTimeout(0) 延後
@@ -1206,4 +1210,80 @@ test('終端分流：Orca ≥1.4.193 的 agentIdentity 欄位是確定訊號（�
   const r = classifyTerms([{ handle: 'h1', connected: true, writable: true, title: 'x', preview: '', agentIdentity: 'claude' }]);
   assert.equal(r.agent, 'h1');
   assert.equal(r.agentSure, true);
+});
+
+// ── 安裝模式（Marketplace / git URL）：插件目錄是雜湊快照、不可寫；狀態檔一律在 stateDir ──
+import { detectInstallMode, STATE_FILES } from '../main.mjs';
+
+test('安裝模式偵測：<plugins>/<key>/<64hex>/ 且旁邊有 current 指標檔 = installed；其餘 dev', () => {
+  const hash = 'a'.repeat(64);
+  assert.equal(detectInstallMode(`/x/plugins/vibeguard.vibeguard-orca/${hash}`, { exists: (p) => p.endsWith('/current') }), 'installed');
+  assert.equal(detectInstallMode(`/x/plugins/vibeguard.vibeguard-orca/${hash}`, { exists: () => false }), 'dev');
+  assert.equal(detectInstallMode('/x/plugins-deploy/vibeguard-orca', { exists: () => true }), 'dev');
+  assert.equal(detectInstallMode('', { exists: () => true }), 'dev');
+});
+
+test('安裝模式：絕不改寫 panel.html（Orca 逐檔雜湊驗證）；狀態檔/位址檔只寫 stateDir；舊版狀態檔搬進 stateDir', async () => {
+  const { orca, commands } = fakeOrca();
+  const written = {};
+  const isState = (p) => STATE_FILES.some((n) => String(p).endsWith('/' + n));
+  const deps = fakeDeps({
+    installMode: 'installed', stateDir: '/st', dashboardToken: 'tokX', panelServer: undefined,
+    fileExists: async (p) => !String(p).startsWith('/st/'), // stateDir 是空的（搬遷要跑）；其他路徑都存在
+    readFile: async (p) => {
+      const s = String(p);
+      if (s.startsWith('/st/')) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      if (s.endsWith('/.notify-state')) return 'off'; // 插件目錄裡的舊版狀態檔
+      if (isState(s)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      return 'const k = "AKIAIOSFODNN7EXAMPLE";';
+    },
+    writeFile: async (p, v) => { written[String(p)] = v; },
+  });
+  await activate(orca, deps);
+  try {
+    await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' });
+    assert.equal(deps.lastPanelHtml, null, '安裝版不得烤 panel.html（改寫快照目錄 = Orca 重啟後完整性驗證失敗）');
+    const paths = Object.keys(written);
+    assert.ok(paths.length > 0 && paths.every((p) => p.startsWith('/st/')), '所有寫檔都要在 stateDir：' + paths.join(','));
+    assert.equal(written['/st/.notify-state'], 'off', '舊版狀態檔要搬進 stateDir');
+    assert.match(written['/st/dashboard-url'], /^http:\/\/127\.0\.0\.1:\d+\/\?token=tokX$/, '靜態面板靠 $(cat dashboard-url) 開即時頁');
+    assert.match(written['/st/api-url'], /^http:\/\/127\.0\.0\.1:\d+\/api\/action\?token=tokX$/);
+    const st = await httpJson(written['/st/dashboard-url'].replace(/\/\?token=.*$/, ''), '/api/state?token=tokX');
+    assert.equal(st.settings.installMode, 'installed');
+    assert.equal(st.settings.stateDir, '/st');
+    assert.ok(st.groups && Object.keys(st.groups).length === 1, 'API 仍提供資料（即時頁的資料來源）');
+  } finally { deactivate(); }
+});
+
+test('通知時自動開啟即時頁：.notify-open-dashboard 含 on → 通知後 orca goto dashboardUrl；預設關；doAction 可寫', async () => {
+  const cliCalls = [];
+  const written = {};
+  const run = async (stateContent) => {
+    const { orca, commands } = fakeOrca();
+    const deps = fakeDeps({
+      dashboardToken: 'tokG', panelServer: undefined,
+      orcaCli: async (args) => { cliCalls.push(args); return ''; },
+      readFile: async (p) => (String(p).endsWith('.notify-open-dashboard') ? stateContent : 'const k = "AKIAIOSFODNN7EXAMPLE";'),
+      writeFile: async (p, v) => { written[String(p)] = v; },
+    });
+    await activate(orca, deps);
+    try {
+      await commands.get('vibeguard.scanFile')({ path: '/x/a.js', worktreeId: 'r::/x' });
+      return deps;
+    } finally { /* 呼叫端 deactivate */ }
+  };
+  await run('off');
+  deactivate();
+  assert.ok(!cliCalls.some((a) => a[0] === 'goto'), '預設/off 不得開即時頁');
+  const deps = await run('on');
+  try {
+    const goto = cliCalls.find((a) => a[0] === 'goto');
+    assert.ok(goto, 'on 時通知後要呼叫 orca goto');
+    assert.equal(goto[1], '--url');
+    assert.ok(String(goto[2]).includes('?token=tokG'));
+    const m = String(deps.lastPanelHtml).match(/http:\/\/127\.0\.0\.1:\d+/);
+    const r = await httpJson(m[0], '/api/action?token=tokG', { kind: 'notifyOpenDashboard', value: 'off' });
+    assert.equal(r.ok, true);
+    assert.equal(written['/st/.notify-open-dashboard'], 'off');
+  } finally { deactivate(); }
 });

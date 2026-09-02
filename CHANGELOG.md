@@ -2,6 +2,19 @@
 
 All notable changes to this project. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/) with `0.x` meaning the Orca plugin API itself is still experimental.
 
+## [0.2.1] — 2026-09-02 — installed-mode fix (first GitHub install found the integrity trap)
+
+### Fixed
+- **Installed plugins broke after an Orca restart.** Orca hash-verifies every file of an installed plugin (Marketplace / git URL) before starting the worker and before loading the panel; 0.2.0 wrote `.dash-token` and rebaked `panel.html` inside that directory, so the next verification failed. All state now lives in `~/.config/vibeguard/` (`VIBEGUARD_STATE_DIR` to override), legacy files in the plugin directory are migrated once, and in installed mode the worker never writes into its own directory.
+- Settings and the Claude token no longer vanish on upgrade (each version used to get a fresh hash directory).
+
+### Changed
+- **Installed mode: the sidebar panel is a static launcher** (`panel.html` with `static: true`): explanation, settings, 🔍 scan project, 🚀 live page. Panel commands resolve the worker address at click time with `$(cat "$HOME/.config/vibeguard/api-url")`, so the committed file contains no token. The live dashboard is the live UI; the sidebar cannot refresh itself (CSP `default-src 'none'`, no remount API — see docs/01 §16). Developer mode (devPluginPaths) keeps the live sidebar panel.
+- New setting **"🚀 Open live page on notification"** (`.notify-open-dashboard`): the worker runs `orca goto` on the live page when a serious-finding notification fires. Notification body now points to the 🚀 button.
+- Heartbeat banner wording no longer claims the worker died when the panel is merely a stale snapshot.
+- `orcaCli` is injectable for tests; four unused dictionary keys removed.
+
+
 ## [0.2.0] — 2026-09-02 — first open-source release
 
 ### Added

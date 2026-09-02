@@ -1,9 +1,9 @@
 // main.mjs — VibeGuard Orca 插件 worker 入口（ISSUE-09）。
 // 頂層不得直接跑：一切動作只在 activate(orca) 被呼叫時發生。
 
-import { readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, access as fsAccess, appendFile as fsAppendFile, readdir as fsReaddir } from 'node:fs/promises';
+import { readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, access as fsAccess, appendFile as fsAppendFile, readdir as fsReaddir, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -30,8 +30,22 @@ let active = null; // { watcher, keepalive, panelServer }（deactivate 是 named
 // （isCurrentApproved 參照比對失敗），等於自我 DoS。寫到 tmpdir 避開。
 // host entry 的 dieFatally 註冊在先，會在我們後面執行：先寫檔再上報退出。
 // exit code 0 = clean（reap/deactivate），1 = crash。
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 export const CRASH_LOG_PATH = join(tmpdir(), 'vibeguard-crash.log');
+
+// 狀態檔一律放 stateDir（預設 ~/.config/vibeguard），**絕不寫進插件目錄**：
+// 安裝版（Marketplace / git URL）的插件目錄是內容雜湊快照，Orca 在 worker 起動與面板載入前
+// 會 hashPluginTree 逐檔驗證（dot 檔也算，只跳過 .git），寫任何檔進去 = Orca 重啟後
+// 「failed integrity verification」→ worker 起不來、面板載不進（asar 實證）。而且每次升級換目錄。
+export const STATE_FILES = ['.notify-state', '.llm-state', '.llm-scan-state', '.locale', '.notify-open-dashboard', '.dash-token', '.llm-token'];
+
+// 安裝模式偵測：安裝版目錄 = <plugins>/<publisher.id>/<64 hex contentHash>/，旁邊有 `current` 指標檔；
+// devPluginPaths（開發者部署資料夾）沒有這個結構。安裝版不烤 panel.html（見上）。
+export function detectInstallMode(pluginDir, { exists = existsSync } = {}) {
+  const dir = String(pluginDir ?? '');
+  if (/^[0-9a-f]{64}$/.test(basename(dir)) && exists(join(dirname(dir), 'current'))) return 'installed';
+  return 'dev';
+}
 let crashLoggingInstalled = false;
 let crashAppend = () => {};
 function installCrashLogging() {
@@ -131,20 +145,35 @@ export default async function activate(orca, deps = {}) {
   installCrashLogging();
   crashAppend(`[${new Date().toISOString()}] activate start`);
   const readFile = deps.readFile ?? ((p) => fsReadFile(p, 'utf8'));
-  const writeFile = deps.writeFile ?? ((p, s) => fsWriteFile(p, s, 'utf8'));
+  const writeFile = deps.writeFile ?? ((p, s) => fsWriteFile(p, s, { encoding: 'utf8', mode: 0o600 })); // 狀態檔含 token，一律 0600
   const appendFile = deps.appendFile ?? ((p, s) => fsAppendFile(p, s, 'utf8'));
+  const fileExists = deps.fileExists ?? (async (p) => { try { await fsAccess(p); return true; } catch { return false; } });
+  const orcaCli = deps.orcaCli ?? runOrcaCli;
   const gate = createGate(1); // LLM 並發 1：兩隻 claude 同時 refresh OAuth 會撞車把 session 撞壞（單次有效 refresh token）
 
+  // ── 狀態目錄（見檔頭 STATE_FILES 註解：插件目錄不可寫）──
+  const pluginDir = dirname(fileURLToPath(import.meta.url));
+  const installMode = deps.installMode ?? detectInstallMode(pluginDir);
+  const stateDir = deps.stateDir ?? process.env.VIBEGUARD_STATE_DIR ?? join(homedir(), '.config', 'vibeguard');
+  await (deps.mkdir ?? ((p) => fsMkdir(p, { recursive: true, mode: 0o700 })))(stateDir).catch(() => {});
+  const stateFile = (name) => join(stateDir, name);
+  // 一次性搬遷：0.2.0 以前狀態檔寫在插件目錄（開發者部署資料夾）→ 有而 stateDir 沒有的就搬過去
+  for (const name of STATE_FILES) {
+    if (await fileExists(stateFile(name))) continue;
+    const legacy = await readFile(join(pluginDir, name)).catch(() => null);
+    if (legacy != null) await writeFile(stateFile(name), legacy).catch(() => {});
+  }
+
   // L3 背景掃描的 LLM 框架/模型（面板下拉切換 → 寫 .llm-state「框架:模型」，每次掃描前讀）
-  const llmStateFile = fileURLToPath(new URL('./.llm-state', import.meta.url));
+  const llmStateFile = stateFile('.llm-state');
   // 長期 token 檔（可選）：使用者跑 `claude setup-token` 把印出的 token 存進來（chmod 600）。
   // 有它，worker 的 claude 就不再依賴使用者終端的 OAuth session（兩邊 refresh 會互咬）。
-  const llmTokenFile = fileURLToPath(new URL('./.llm-token', import.meta.url));
+  const llmTokenFile = stateFile('.llm-token');
   // dashboard token 持久化：重啟就換 token 會讓已掛載面板/使用者複製的 curl 全部 bad token
   // （實際發生：免檢按了沒效）。首次生成存檔沿用。
   // 位置警告：這段有 await，必須放在 backfill 排程（scheduleDeferred）之前——
   // activate 後段的任何 await 都會讓 backfill 的 `if (!active) return` 在 active 設定前搶跑而靜默跳過。
-  const dashTokenFile = fileURLToPath(new URL('./.dash-token', import.meta.url));
+  const dashTokenFile = stateFile('.dash-token');
   let dashToken = deps.dashboardToken ?? null;
   if (!dashToken) {
     const saved = (await readFile(dashTokenFile).catch(() => null))?.trim();
@@ -160,7 +189,7 @@ export default async function activate(orca, deps = {}) {
   // 語言：.locale 檔（'auto' 或 i18n.mjs 的語系 id；面板/dashboard 的語言選單寫入）+ 系統語言。
   // worker 端用在：桌面通知、送給 agent 的修復/開 issue 訊息、掃描記錄與 doAction 回覆的 note。
   // 面板自己有 navigator.language，這裡的 resolvedLocale 只是它的次順位參考。
-  const localeStateFile = fileURLToPath(new URL('./.locale', import.meta.url));
+  const localeStateFile = stateFile('.locale');
   const systemLocale = deps.systemLocale ?? detectSystemLocale();
   let currentLocale = resolveLocale('auto', systemLocale); // 最近一次讀到的解析結果（同步路徑如 logScan 用）
   async function localeSettings() {
@@ -336,7 +365,7 @@ export default async function activate(orca, deps = {}) {
   const listTerminalsFor = deps.listTerminalsFor ?? (async (worktreeId) => {
     const path = String(worktreeId).split('::').pop(); // worktreeId 是 repoId::path，selector 用 path:
     if (!path || path === 'manual') return { agent: null, agentSure: false, shell: null };
-    const out = await runOrcaCli(['terminal', 'list', '--worktree', `path:${path}`, '--json']).catch(() => null);
+    const out = await orcaCli(['terminal', 'list', '--worktree', `path:${path}`, '--json']).catch(() => null);
     if (!out) return { agent: null, agentSure: false, shell: null };
     try {
       const terms = JSON.parse(out)?.result?.terminals ?? [];
@@ -412,9 +441,13 @@ export default async function activate(orca, deps = {}) {
       ...(await notifySettings()),
       ...(await llmScanSettings()),
       ...(await localeSettings()),
+      ...(await notifyOpenSettings()),
+      installMode,
+      stateDir,
       stateFile: notifyStateFile,
       llmScanStateFile,
       localeStateFile,
+      notifyOpenStateFile,
       dashboardUrl,
       llm: { ...(await llmSettings()), stateFile: llmStateFile },
     };
@@ -445,6 +478,9 @@ export default async function activate(orca, deps = {}) {
     return JSON.stringify([g, r, data.issues ?? {}, data.settings ?? {}]);
   }
   async function bakeNow() {
+    // 安裝版不烤：panel.html 在被驗證完整性的快照目錄裡，改寫它 = Orca 重啟後整個插件載不起來。
+    // 安裝版的側欄面板是靜態啟動器（panel.html 內嵌 static:true），資料看 🚀 即時頁。
+    if (installMode === 'installed') return;
     const data = await buildPanelData();
     const h = meaningfulHash(data);
     if (h === lastMeaningfulHash && now() - lastBakeWriteAt < PANEL_LIVENESS_MS) return;
@@ -475,12 +511,18 @@ export default async function activate(orca, deps = {}) {
 
   // 通知開關（面板上的 Orca 風格 switch 用 shell 指令寫這個檔；worker 每次通知前讀）
   // 內容含 'off' token = 關；其他/不存在 = 開（預設開）
-  const notifyStateFile = fileURLToPath(new URL('./.notify-state', import.meta.url));
+  const notifyStateFile = stateFile('.notify-state');
   // LLM 掃描開關：內容含 'off' = 關（只跑 L1/L2 regex，省 AI 額度）；其餘/不存在 = 開
-  const llmScanStateFile = fileURLToPath(new URL('./.llm-scan-state', import.meta.url));
+  const llmScanStateFile = stateFile('.llm-scan-state');
   async function llmScanSettings() {
     const s = await readFile(llmScanStateFile).catch(() => null);
     return { llmScanEnabled: s == null || !s.trim().split(/\s+/).includes('off') };
+  }
+  // 通知時自動開啟即時頁：內容含 'on' = 開；其餘/不存在 = 關（預設關，會搶焦點）
+  const notifyOpenStateFile = stateFile('.notify-open-dashboard');
+  async function notifyOpenSettings() {
+    const s = await readFile(notifyOpenStateFile).catch(() => null);
+    return { notifyOpenDashboard: s != null && s.trim().split(/\s+/).includes('on') };
   }
   async function notifySettings() {
     const s = await readFile(notifyStateFile).catch(() => null);
@@ -649,6 +691,9 @@ export default async function activate(orca, deps = {}) {
             title: t(resolvedLocale, 'notifyTitle').slice(0, 120),
             body: t(resolvedLocale, 'notifyBody', { name, crit, total: newSerious.length }).slice(0, 1000),
           }).catch(() => {});
+          // 使用者要「有通知時跳出來」：安裝版側欄面板不會自動更新，所以順便開（或切到）即時頁
+          const { notifyOpenDashboard } = await notifyOpenSettings();
+          if (notifyOpenDashboard && dashboardUrl) await orcaCli(['goto', '--url', dashboardUrl]).catch(() => {});
         }
       }
       // 無論有無發現都更新（乾淨重掃 = 清掉該檔舊 findings）
@@ -765,7 +810,6 @@ export default async function activate(orca, deps = {}) {
 
   // 啟動自清：worker 停擺期間被刪的檔不會再有事件，其 findings 會永久殘留——啟動時 stat 一輪
   {
-    const fileExists = deps.fileExists ?? (async (p) => { try { await fsAccess(p); return true; } catch { return false; } });
     let pruned = 0;
     for (const [wt, byAgent] of Object.entries(memory)) {
       for (const [agentKey, list] of Object.entries(byAgent)) {
@@ -788,7 +832,7 @@ export default async function activate(orca, deps = {}) {
   // 看到 .git / panel.html 變動），isCurrentApproved 的參照比對會失敗，worker 會在
   // activate 完成當下被 deactivate（實測 activate end 後 1ms 被殺）。所以延後跑。
   const listManagedWorktrees = deps.listManagedWorktrees ?? (async () => {
-    const out = await runOrcaCli(['worktree', 'list', '--json']).catch(() => null);
+    const out = await orcaCli(['worktree', 'list', '--json']).catch(() => null);
     if (!out) return [];
     try {
       const list = JSON.parse(out)?.result?.worktrees ?? [];
@@ -832,7 +876,7 @@ export default async function activate(orca, deps = {}) {
   const openFile = deps.openFile ?? (async (path, worktreeId) => {
     const args = ['file', 'open', path];
     if (worktreeId) args.push('--worktree', worktreeId);
-    await runOrcaCli(args);
+    await orcaCli(args);
   });
 
   // 指令
@@ -886,6 +930,11 @@ export default async function activate(orca, deps = {}) {
     }
     if (kind === 'notify') {
       await writeFile(notifyStateFile, body.value === 'off' ? 'off' : 'on');
+      await refreshPanel();
+      return { ok: true };
+    }
+    if (kind === 'notifyOpenDashboard') {
+      await writeFile(notifyOpenStateFile, body.value === 'on' ? 'on' : 'off');
       await refreshPanel();
       return { ok: true };
     }
@@ -956,7 +1005,7 @@ export default async function activate(orca, deps = {}) {
       if (term?.agent) {
         const args = ['terminal', 'send', '--terminal', term.agent, '--text', message];
         if (term.agentSure !== false) args.push('--enter');
-        await runOrcaCli(args);
+        await orcaCli(args);
         return term.agentSure === false
           ? { ok: true, ...note('noteAgentUnsure') }
           : { ok: true };
@@ -985,6 +1034,9 @@ export default async function activate(orca, deps = {}) {
   if (panelServer) {
     dashboardUrl = `${panelServer.url}/?token=${dashToken}`;
     orca.log?.(`panel server: ${panelServer.url}`);
+    // 安裝版的靜態面板拿不到內嵌設定：把位址落到 stateDir，面板指令用 $(cat …) 在 shell 端展開
+    await writeFile(stateFile('dashboard-url'), dashboardUrl).catch(() => {});
+    await writeFile(stateFile('api-url'), `${panelServer.url}/api/action?token=${dashToken}`).catch(() => {});
   }
 
   active = { watcher, keepalive, panelServer, backfillTimer: null };

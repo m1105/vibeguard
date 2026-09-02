@@ -40,7 +40,9 @@ When coding agents (Claude / Codex / Kimi / Gemini / …) write files in your Or
 
 1. Orca → `Cmd-,` → **Plugins** → **Marketplaces** → **Add source** → paste the raw URL of this repo's `orca-marketplace.json` (or the repo URL)
 2. Find **VibeGuard** → **Install** → consent to the capabilities → enable
-3. The panel is the 🛡️ VibeGuard entry in the sidebar. It is a **snapshot**: the worker rewrites `panel.html` after each scan; close and reopen the panel to see the latest (Marketplace installs have no dev watcher, so the panel does not auto-refresh; for true live updates press 🚀 to open the embedded dashboard)
+3. In an installed plugin the 🛡️ VibeGuard sidebar panel is a **static launcher**: explanation, settings, 🔍 scan project, 🚀 open the live page. **Press 🚀 to see results** — the live page in Orca's embedded browser auto-refreshes every 2 s and offers fix / issue / dismiss.
+   Why the sidebar cannot show data: Orca verifies the **hash of every file** in an installed plugin's directory (before the worker starts and before the panel loads), so a plugin must not rewrite anything in its own directory — including the `panel.html` that developer mode bakes results into. The panel sandbox also forbids fetch, so the live page is the only place data can be shown live.
+4. Turn on "🚀 Open live page on notification" in ⚙️ Settings: when a serious finding raises a notification, the live page opens (or is switched to) automatically.
 
 ### Option A′: direct git URL, no marketplace
 
@@ -50,9 +52,9 @@ Orca → `Cmd-,` → **Plugins** → **Install plugin** → choose **Git** and p
 https://github.com/m1105/vibeguard.git#v0.2.0
 ```
 
-**The `#tag` (or `#commit`) is mandatory** — Orca pins every install to an explicit version and rejects a bare URL. It runs `git clone --depth 1 --branch v0.2.0` on the repo and reads `orca-plugin.json` at the root. To upgrade, install the newer tag.
+**The `#tag` (or `#commit`) is mandatory** — Orca pins every install to an explicit version and rejects a bare URL. It runs `git clone --depth 1 --branch v0.2.1` on the repo and reads `orca-plugin.json` at the root. To upgrade, install the newer tag. The panel behaves as described above (static launcher + 🚀 live page).
 
-### Option B: developers (clean deploy folder + devPluginPaths, panel auto-refreshes)
+### Option B: developers (clean deploy folder + devPluginPaths, live sidebar panel)
 
 ```bash
 git clone https://github.com/m1105/vibeguard.git
@@ -64,7 +66,7 @@ node scripts/deploy.mjs     # deploys to ~/orca/plugins-deploy/vibeguard-orca (r
 Then Orca → Settings → Plugins → Development → add the printed folder to **devPluginPaths** → enable.
 After every code change: `node scripts/deploy.mjs` → **toggle the plugin off in Settings, wait 10 s, toggle on** (the only safe way to load new code; see "Known limitations").
 
-Why not point at the repo itself: Orca's dev watcher watches the whole folder, and the high-frequency churn of `.git` / editor state kills the worker mid-activation. In the deploy folder the only thing that ever changes is the `panel.html` the worker bakes — which is exactly the mechanism that makes the panel auto-refresh.
+Why not point at the repo itself: Orca's dev watcher watches the whole folder, and the high-frequency churn of `.git` / editor state kills the worker mid-activation. In the deploy folder the only thing that ever changes is the `panel.html` the worker bakes — which is exactly the mechanism that makes the sidebar panel auto-refresh. Developer mode has no integrity verification, which is why its sidebar panel can show live data — the main difference from an installed plugin.
 
 ### LLM requirement (optional)
 
@@ -74,12 +76,12 @@ Why not point at the repo itself: Orca's dev watcher watches the whole folder, a
 
   ```bash
   claude setup-token            # prints a long-lived token
-  # store it in the PLUGIN INSTALL directory's .llm-token (not in the repo!)
-  printf '%s' '<token>' > ~/orca/plugins-deploy/vibeguard-orca/.llm-token
-  chmod 600 ~/orca/plugins-deploy/vibeguard-orca/.llm-token
+  mkdir -p ~/.config/vibeguard && chmod 700 ~/.config/vibeguard
+  printf '%s' '<token>' > ~/.config/vibeguard/.llm-token
+  chmod 600 ~/.config/vibeguard/.llm-token
   ```
 
-  The worker reads it before every scan and runs `claude` with `CLAUDE_CODE_OAUTH_TOKEN`, never touching the keychain. The file is gitignored and only ever passed to the claude framework.
+  The worker reads it before every scan and runs `claude` with `CLAUDE_CODE_OAUTH_TOKEN`, never touching the keychain. `~/.config/vibeguard/` is where all VibeGuard state lives (see "Privacy & sensitive data"), so upgrades and reinstalls never lose it; the token is only ever passed to the claude framework.
 
 ## Usage
 
@@ -99,6 +101,7 @@ Nothing to do after enabling: any file saved in a worktree triggers a scan. Crit
   - 🚫 **Skip file** / 🙈 **Dismiss**: appended to that repo's `.vibeguard-ignore`, effective within seconds, and learned into `.vibeguard-learned.json`
 - **⚙️ Settings card**:
   - 🔔 **Notifications**: off still scans and logs, only the popup is suppressed
+  - 🚀 **Open live page on notification**: when a serious-finding notification fires, the live page is opened (or switched to) as well — strongly recommended for installed plugins, whose sidebar panel does not refresh
   - 🤖 **LLM scan**: off means local regex only, no AI calls at all
   - 🧠 **L3 semantic review**: LLM framework and model dropdowns (claude / codex / gemini)
   - 🌐 **Language**: Auto (system) / 繁體中文 / English / 简体中文 / 日本語. An explicit choice is synced to the worker so notifications and agent messages switch too
@@ -162,7 +165,7 @@ Full policy in [`SECURITY.md`](SECURITY.md). In short:
 - **Panel / notifications / storage**: all local. Findings live in Orca's plugin storage and in `panel.html` (including code snippets, which are also redacted).
 - **GitHub issues (only when you click)**: the issue body contains the file path, rule name, description and suggestion (control characters stripped). **On public repos, check the text before confirming.**
 
-**Local state files** (plugin directory, plain text, all gitignored): `.notify-state`, `.llm-state`, `.llm-scan-state`, `.locale`, `.dash-token` (dashboard auth token), `.llm-token` (Claude long-lived token — the only credential file, `chmod 600`).
+**Local state files** (all in `~/.config/vibeguard/`, mode `0600`; **never inside the plugin directory** — an installed plugin's directory is integrity-verified by Orca, and writing into it breaks the plugin after the next Orca restart): `.notify-state`, `.llm-state`, `.llm-scan-state`, `.locale`, `.notify-open-dashboard` (plain settings), `.dash-token`, `dashboard-url`, `api-url` (address and auth token of the local dashboard, bound to `127.0.0.1` only), `.llm-token` (Claude long-lived token — the only external credential). Override the location with the `VIBEGUARD_STATE_DIR` environment variable.
 
 **Declared capabilities** (Orca's capability gate): `workspace:read`, `terminal:send`, `notifications:show`, `storage`, `events:subscribe`. **No network capability** — apart from your own agent CLI and the `gh` calls you trigger, the plugin makes no outbound connections; the dashboard binds `127.0.0.1` only.
 
@@ -191,6 +194,7 @@ Deliberately **not** ported: Python AST taint analysis, Tree-sitter, agent_secur
 ## Known limitations
 
 - **False positives** (see the top). LLM findings are leads to verify.
+- **The sidebar panel of an installed plugin is static**: Orca hash-verifies every file of an installed plugin, so the plugin cannot rewrite its own `panel.html`; the panel sandbox forbids fetch and no API can trigger a panel remount. Results always live on the 🚀 live page; use the developer install for live data inside the sidebar.
 - **No line jump**: Orca plugin API v1 has no openFile action and the CLI has no `--line`; the inline snippet is the substitute.
 - **Agent attribution is a guess**: Orca events do not say who wrote a file; the finding is attributed to the agent most recently active in that worktree within 10 minutes (`agent.status.changed`), otherwise `unknown`.
 - **Terminal identity is heuristic**: Orca ≥ 1.4.193 exposes `agentIdentity`, which is definitive; older versions only offer title/preview hints. When unsure, fix messages are placed in the input box without auto-submit.

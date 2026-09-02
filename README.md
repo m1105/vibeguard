@@ -40,7 +40,9 @@
 
 1. Orca → `Cmd-,` → **Plugins** → **Marketplaces** → **Add source**，貼上本 repo 的 `orca-marketplace.json` 原始網址（或 repo URL）
 2. 在瀏覽裡找到 **VibeGuard** → **Install** → 同意 capabilities → 啟用
-3. 面板：側邊欄的 🛡️ VibeGuard。它是**快照**：worker 每次掃描後重寫 `panel.html`，關閉再開面板即可看到最新（Marketplace 安裝沒有 dev watcher，面板不會自動刷新；要真即時請按面板的 🚀 開內嵌 dashboard）
+3. 側邊欄的 🛡️ VibeGuard 面板在**安裝版是靜態啟動器**：說明、設定、🔍 掃全專案、🚀 開啟即時頁。**要看掃描結果請按 🚀**——即時頁在 Orca 內嵌瀏覽器每 2 秒自動更新，修復／開 issue／忽略全部可用。
+   為什麼側欄不能顯示資料：Orca 對安裝版插件目錄做**逐檔雜湊完整性驗證**（worker 起動與面板載入前都驗），插件不能改寫自己目錄裡的任何檔案，所以無法像開發者模式那樣把結果烤進 `panel.html`；而面板沙箱又禁止 fetch，唯一能即時顯示資料的地方就是即時頁。
+4. 建議在 ⚙️ 設定打開「🚀 通知時自動開啟即時頁」：有嚴重問題跳通知時，即時頁會自動開啟（或切過去）。
 
 ### 方法一之二：不經 Marketplace，直接貼 git URL
 
@@ -50,9 +52,9 @@ Orca → `Cmd-,` → **Plugins** → **Install plugin** → 選 **Git**，貼：
 https://github.com/m1105/vibeguard.git#v0.2.0
 ```
 
-**`#` 後面的 tag 或 commit 是必填**（Orca 要求安裝釘在明確版本；只貼 URL 會被拒絕）。Orca 會 `git clone --depth 1 --branch v0.2.0` 這個 repo，讀根目錄的 `orca-plugin.json`。要升級就重新安裝新的 tag。
+**`#` 後面的 tag 或 commit 是必填**（Orca 要求安裝釘在明確版本；只貼 URL 會被拒絕）。Orca 會 `git clone --depth 1 --branch v0.2.1` 這個 repo，讀根目錄的 `orca-plugin.json`。要升級就重新安裝新的 tag。安裝版的面板行為同上（靜態啟動器 + 🚀 即時頁）。
 
-### 方法二：開發者（乾淨部署資料夾 + devPluginPaths，面板自動更新）
+### 方法二：開發者（乾淨部署資料夾 + devPluginPaths，側欄面板即時更新）
 
 ```bash
 git clone https://github.com/m1105/vibeguard.git
@@ -64,7 +66,7 @@ node scripts/deploy.mjs     # 佈署到 ~/orca/plugins-deploy/vibeguard-orca（�
 然後 Orca → Settings → Plugins → Development → 把上面印出的資料夾加進 **devPluginPaths** → 啟用。
 之後每次改碼：`node scripts/deploy.mjs` → **到設定頁把插件關掉、等 10 秒、再開**（這是唯一安全的換碼方式，見「已知限制」）。
 
-為什麼不直接指向 repo：Orca 的 dev watcher 會盯著整個資料夾，repo 裡 `.git`／編輯器狀態的高頻變動會在 activation 中途把 worker 殺掉；部署資料夾裡唯一會變的就是 worker 自己烤的 `panel.html`，這正是「面板自動更新」的機制。
+為什麼不直接指向 repo：Orca 的 dev watcher 會盯著整個資料夾，repo 裡 `.git`／編輯器狀態的高頻變動會在 activation 中途把 worker 殺掉；部署資料夾裡唯一會變的就是 worker 自己烤的 `panel.html`，這正是「側欄面板自動更新」的機制。開發者模式沒有完整性驗證，所以側欄面板能直接顯示即時資料——這是它與安裝版最大的差別。
 
 ### LLM 需求（可選）
 
@@ -74,12 +76,12 @@ node scripts/deploy.mjs     # 佈署到 ~/orca/plugins-deploy/vibeguard-orca（�
 
   ```bash
   claude setup-token            # 印出一個長期 token
-  # 把它存到「插件安裝目錄」的 .llm-token（不是 repo！）
-  printf '%s' '<token>' > ~/orca/plugins-deploy/vibeguard-orca/.llm-token
-  chmod 600 ~/orca/plugins-deploy/vibeguard-orca/.llm-token
+  mkdir -p ~/.config/vibeguard && chmod 700 ~/.config/vibeguard
+  printf '%s' '<token>' > ~/.config/vibeguard/.llm-token
+  chmod 600 ~/.config/vibeguard/.llm-token
   ```
 
-  worker 每次掃描前讀它，以 `CLAUDE_CODE_OAUTH_TOKEN` 環境變數執行 `claude`，完全不碰 keychain。此檔已在 `.gitignore`，且只給 claude 框架，不會外流。
+  worker 每次掃描前讀它，以 `CLAUDE_CODE_OAUTH_TOKEN` 環境變數執行 `claude`，完全不碰 keychain。`~/.config/vibeguard/` 是 VibeGuard 所有狀態檔的家（見下方「隱私與機敏資料」），升級、重裝都不會丟；token 只給 claude 框架，不會外流。
 
 ## 使用方法
 
@@ -99,6 +101,7 @@ node scripts/deploy.mjs     # 佈署到 ~/orca/plugins-deploy/vibeguard-orca（�
   - 🚫 **此檔免檢** ／ 🙈 **忽略這筆**：寫進該 repo 根目錄的 `.vibeguard-ignore`，數秒內生效，並學進 `.vibeguard-learned.json`
 - **⚙️ 設定卡**：
   - 🔔 **啟用通知**：關掉照樣掃、照樣記錄，只是不跳通知
+  - 🚀 **通知時自動開啟即時頁**：跳嚴重問題通知時順便開啟（或切到）即時頁——安裝版強烈建議打開，因為側欄面板不會自動更新
   - 🤖 **LLM 掃描**：關掉後只跑本地 regex，完全不叫 AI
   - 🧠 **L3 語意審查**：LLM 框架與模型下拉（claude／codex／gemini）
   - 🌐 **語言**：自動（跟隨系統）／繁體中文／English／简体中文／日本語。明確選擇會同步給 worker，通知與送 agent 的訊息也換語言
@@ -162,7 +165,7 @@ rule_id src/config.js:42         # 只忽略那一筆
 - **面板／通知／storage**：全部本機。findings 存在 Orca 插件 storage 與 `panel.html`（含代碼片段，片段也經過脫敏）。
 - **GitHub issue（只在你按按鈕時）**：issue 內容含檔案路徑、規則名、問題描述與建議（控制字元已清除）。**公開 repo 請先確認描述裡沒有你不願公開的內容**。
 
-**本機狀態檔**（插件目錄內、純文字、皆在 `.gitignore`）：`.notify-state`、`.llm-state`、`.llm-scan-state`、`.locale`、`.dash-token`（dashboard 認證 token）、`.llm-token`（claude 長期 token，唯一的憑證檔，`chmod 600`）。
+**本機狀態檔**（全部在 `~/.config/vibeguard/`，`0600`；**絕不寫在插件目錄**——安裝版的插件目錄受 Orca 完整性驗證，寫進去 Orca 重啟後插件就載不起來）：`.notify-state`、`.llm-state`、`.llm-scan-state`、`.locale`、`.notify-open-dashboard`（一般設定）、`.dash-token`、`dashboard-url`、`api-url`（本機 dashboard 的位址與認證 token，只綁 `127.0.0.1`）、`.llm-token`（claude 長期 token，唯一的外部憑證）。可用環境變數 `VIBEGUARD_STATE_DIR` 改位置。
 
 **宣告的 capabilities**（Orca 能力閘門）：`workspace:read`、`terminal:send`、`notifications:show`、`storage`、`events:subscribe`。**沒有網路能力**——除了你自己安裝的 agent CLI 與你按鈕觸發的 `gh`，本插件不連外；dashboard 只綁 `127.0.0.1`。
 
@@ -191,6 +194,7 @@ rule_id src/config.js:42         # 只忽略那一筆
 ## 已知限制
 
 - **會誤報**（見最上方）。LLM findings 本質是待查證線索。
+- **安裝版側欄面板是靜態的**：Orca 對安裝版做逐檔雜湊驗證，插件不能改寫自己的 `panel.html`；面板沙箱又禁 fetch、沒有任何 API 能觸發面板重掛。結果一律看 🚀 即時頁；想在側欄看即時資料請用開發者安裝方式。
 - **無法跳到行號**：Orca 插件 API v1 沒有 openFile action、CLI 沒有 `--line`；以面板內嵌片段替代。
 - **findings 的 agent 歸屬是推測的**：Orca 事件不帶「誰寫了這個檔」；取該 worktree 10 分鐘內最近活動的 agent（`agent.status.changed`），否則 `unknown`。
 - **終端身分靠啟發式**：Orca ≥ 1.4.193 的 `agentIdentity` 欄位是確定訊號；舊版只能看標題／preview 特徵。認不出時修復訊息只放進輸入框不自動送。
