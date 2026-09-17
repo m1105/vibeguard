@@ -93,12 +93,57 @@ test('scanEntropy: "abc" (<6) → no finding', () => {
 
 // --- scanEntropy: low entropy (has spaces) but not placeholder → assignment finding ---
 
-test('scanEntropy: "hello world foo bar" (spaces, not placeholder) → hardcoded_secret_assignment', () => {
-  const text = 'my_secret = "hello world foo bar"';
-  const out = scanEntropy(text);
-  assert.equal(out.length, 1);
-  assert.equal(out[0].rule, 'hardcoded_secret_assignment');
-  assert.equal(out[0].severity, 'critical');
+// VibeGuard 偏離 DeepSec（docs/02 #16）：DeepSec 對非高熵值一律報 critical，實測誤報成災
+// （"pay_corp:open"、regex、識別字、註解範例全被當密鑰）。改依「值的形狀」分流。
+test('scanEntropy: "hello world foo bar"（含空白＝文案）→ 不報（VibeGuard 偏離 DeepSec，docs/02 #16）', () => {
+  assert.deepEqual(scanEntropy('my_secret = "hello world foo bar"'), []);
+});
+
+test('scanEntropy: 值含 regex/glob 中繼字元或非 ASCII → 不報（是 pattern/文案，不是密鑰）', () => {
+  assert.deepEqual(scanEntropy("const COUNTRY_TOKEN = '中華民國|R\\.?O\\.?C\\.?|Taiwan';"), []);
+  assert.deepEqual(scanEntropy("const PATH_TOKEN = 'users/*/tokens';"), []);
+  assert.deepEqual(scanEntropy('const JSON_TOKEN = "{\"a\":1}xxxx";'), []);
+});
+
+test('scanEntropy: 變數名尾巴是識別字類後綴（_ID/_PREFIX/_NAME/…Hash）→ 不報（值是名字不是密鑰）', () => {
+  assert.deepEqual(scanEntropy('export const RIDE_DEV_RUNTIME_CREDENTIAL_ID = "harness-dev-runtime" as const;'), []);
+  assert.deepEqual(scanEntropy('ACCOUNT_TOKEN_PREFIX = "pay_corp:a:"'), []);
+  assert.deepEqual(scanEntropy('const apiKeyHeaderName = "x-api-key-v2"'), []);
+  assert.deepEqual(scanEntropy('{"needsPasswordRehash": "notcurrent"}'), []);
+  // 但 _KEY 本身是敏感核心字，不能被當後綴放行
+  assert.equal(scanEntropy('const MY_API_KEY = "a1b2c3d4e5f6g7h8i9j0"').length, 1); // 裸 API_KEY 是 DeepSec quirk 不命中，前面要有字元
+});
+
+test('scanEntropy: 值無數字的 slug/單字（pay_corp:open、strong-pass）→ 降為 low、confidence 0.3、標題註明低風險', () => {
+  const [f] = scanEntropy('OPEN_TOKEN = "pay_corp:open"');
+  assert.equal(f.rule, 'hardcoded_secret_assignment');
+  assert.equal(f.severity, 'low');
+  assert.equal(f.confidence, 0.3);
+  assert.ok(f.title.includes('低風險'), f.title);
+  assert.ok(f.description.includes('無數字'), f.description);
+  const [g] = scanEntropy('_DEV_DEFAULT_SECRET = "dev_internal_bot_webhook_secret"');
+  assert.equal(g.severity, 'low');
+});
+
+test('scanEntropy: 命中行是註解（*、//、#）→ 降為 low（文件範例），不是 critical', () => {
+  const [f] = scanEntropy(" *   SEED_OWNER_EMAIL=owner@example.com SEED_OWNER_PASSWORD='str0ng-pass1' \\");
+  assert.equal(f.severity, 'low');
+  assert.ok(f.description.includes('註解'), f.description);
+  const [g] = scanEntropy('# db_password = "hunter2hunter22"');
+  assert.equal(g.severity, 'low');
+});
+
+test('scanEntropy: 含數字、無中繼字元、非註解、但熵 < 3.8 → 仍 critical（DeepSec 原行為保留）', () => {
+  const [f] = scanEntropy('db_password = "passw0rd123"');
+  assert.equal(f.rule, 'hardcoded_secret_assignment');
+  assert.equal(f.severity, 'critical');
+  assert.equal(f.confidence, 0.6);
+});
+
+test('scanEntropy: 高熵路徑不受形狀分流影響（仍 critical）', () => {
+  const [f] = scanEntropy("const PAX_BOT_TOKEN = '7000000011:AAdeplXyZq9wK3mN8vB1cR5tY7uI2oP4aS6d';");
+  assert.equal(f.rule, 'hardcoded_secret_high_entropy_assignment');
+  assert.equal(f.severity, 'critical');
 });
 
 // --- scanEntropy: YAML/JS object style (unquoted key with colon) ---

@@ -55,6 +55,33 @@ const ENV_REF_RE = new RegExp('(?:process\\.env|os\\.getenv|os\\.environ|import\
 // export 供 redaction.mjs 重用（ISSUE-08）
 export const ASSIGNMENT_RE = /\b([A-Za-z_][A-Za-z0-9_]*(?:api[_-]?key|secret|password|passwd|pwd|token|private[_-]?key|jwt[_-]?secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|credential)[A-Za-z0-9_]*)\b\s*[:=]\s*(['"`])((?:\\.|(?!\2).){6,})\2/gi;
 
+// ── VibeGuard 偏離 DeepSec（docs/02 #16）：非高熵值的「形狀分流」──
+// DeepSec 對任何非 placeholder 的值一律報 critical，實測 dogfooding 誤報成災：
+// "pay_corp:open"（callback 前綴）、regex 字面值、識別字（…_ID / …_PREFIX）、註解裡的範例全被當密鑰。
+// 高熵路徑不動；非高熵值依形狀分三級：skip（明顯不是密鑰）/ low（像識別字或範例）/ critical（DeepSec 原行為）。
+const NON_SECRET_VALUE_RE = /[\s|\\*?^$()[\]{}<>]|[^\x20-\x7e]/; // 空白、regex/glob 中繼字元、非 ASCII → pattern 或文案
+// 變數名尾巴是「名字類」後綴 → 值是某個東西的名稱/前綴/雜湊，不是憑證本身。
+// 刻意不含 key（api_key 的 key 是敏感核心字）。
+const IDENTIFIER_SUFFIX_RE = /(?:^|[_-])?(?:id|ids|name|names|prefix|suffix|type|kind|label|header|field|path|url|env|var|param|flag|mode|scope|hash|length|len|ttl|format|regex|pattern|rehash)$/i;
+const COMMENT_LINE_RE = /^\s*(?:\/\/|\/\*|\*|#|--|<!--|;)/;
+
+/**
+ * 非高熵值的分流。回 { level: 'skip' | 'low' | 'critical', reason?: string }
+ * @param {{ varName: string, value: string, line: string }} input
+ */
+export function triageLowEntropyAssignment({ varName, value, line }) {
+  if (NON_SECRET_VALUE_RE.test(value)) return { level: 'skip', reason: 'pattern-or-text' };
+  if (IDENTIFIER_SUFFIX_RE.test(varName)) return { level: 'skip', reason: 'identifier-name' };
+  if (COMMENT_LINE_RE.test(line)) return { level: 'low', reason: 'comment' };
+  if (!/\d/.test(value)) return { level: 'low', reason: 'no-digit' };
+  return { level: 'critical' };
+}
+
+const LOW_REASON_TEXT = {
+  comment: '命中行是註解，多半是文件範例',
+  'no-digit': '值無數字、像識別字或單字',
+};
+
 /**
  * 掃描 text，回報敏感變數被賦予字面值的 finding。
  * @param {string} text - 檔案內容
@@ -95,17 +122,24 @@ export function scanEntropy(text, { target = null, seenRanges = [] } = {}) {
     const matchEnd = m.index + m[0].length; // DeepSec _finding 用 match.end() 定位 end 位置
     const { line: endLn, column: endCol } = indexToLineCol(text, matchEnd);
     const highEntropy = isHighEntropy(value, true);
+    // 4. 非高熵值依形狀分流（VibeGuard 擴充，docs/02 #16）
+    const triage = highEntropy ? { level: 'critical' } : triageLowEntropyAssignment({ varName, value, line });
+    if (triage.level === 'skip') continue;
+    const low = triage.level === 'low';
 
     findings.push(
       createFinding({
         layer: 'L1',
-        severity: 'critical',
+        severity: low ? 'low' : 'critical',
         type: 'hardcoded_secret',
         rule: highEntropy ? 'hardcoded_secret_high_entropy_assignment' : 'hardcoded_secret_assignment',
-        title: highEntropy ? '敏感變數被賦予高熵字面值' : '敏感變數被賦予字面值',
-        description: `變數 ${varName} 被賦予疑似密鑰的字面值。`,
+        title: highEntropy ? '敏感變數被賦予高熵字面值' : (low ? '敏感變數被賦予字面值（低風險）' : '敏感變數被賦予字面值'),
+        description: low
+          ? `變數 ${varName} 被賦予字面值，但${LOW_REASON_TEXT[triage.reason]}，多半不是真密鑰——請看一眼確認。`
+          : `變數 ${varName} 被賦予疑似密鑰的字面值。`,
         evidence: `${varName} = ${maskSecret(value)}`,
-        suggestion: '改用環境變數或 secret manager。',
+        suggestion: low ? '若確實不是密鑰，按「忽略這筆」即可；是密鑰就改用環境變數或 secret manager。' : '改用環境變數或 secret manager。',
+        ...(low ? { confidence: 0.3 } : {}),
         line: ln,
         column,
         endLine: endLn,

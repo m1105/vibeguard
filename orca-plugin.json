@@ -3,7 +3,7 @@
   "id": "vibeguard-orca",
   "publisher": "vibeguard",
   "name": "VibeGuard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Real-time security screening for AI-generated code: local L1/L2 regex + optional LLM semantic review (Claude/Codex/Gemini). Advisory only — expect false positives. AI 生成代碼即時安全提醒（會誤報，請人工查證）。",
   "engines": {
     "orca": ">=1.4.0"

@@ -32,5 +32,7 @@ _English: [`02-deepsec-fidelity.en.md`](02-deepsec-fidelity.en.md)_
 14. **ignore 語義**：命中的 finding 標 `dismissed=true` + reason，**不是刪除**（我們簡化為過濾移除，差異記錄於此）。
 15. **不移植**：Python AST taint 分析、agent_security（prompt_injection/tool_abuse/data_exfil）、supply_chain（typosquatting/dependency_confusion）。其中 supply_chain 的幻覺包種子清單保留在 `seeds/known-packages.json`（後續 issue）。
 
+16. **【VibeGuard 偏離】非高熵賦值的形狀分流（2026-09-18，dogfooding 實測）**：DeepSec 對 `_sensitive_assignments` 命中的任何非 placeholder 值一律報 `hardcoded_secret_assignment` critical。實測誤報成災（`OPEN_TOKEN = "pay_corp:open"`、`COUNTRY_TOKEN = '中華民國|R\.?O\.?C\.?'` regex、`…_CREDENTIAL_ID = "harness-dev-runtime"`、註解裡的 `PASSWORD='strong-pass'` 範例）。`l1-entropy.mjs` 的 `triageLowEntropyAssignment` 對**非高熵**值分三級：值含空白／regex-glob 中繼字元／非 ASCII → **skip**（pattern 或文案）；變數名尾巴是名字類後綴（`_ID`、`_PREFIX`、`_NAME`、`…Hash` 等，刻意不含 `key`）→ **skip**；命中行是註解、或值無數字 → **low**（confidence 0.3，標題註明「低風險」）；其餘（含數字、非註解、熵 < 3.8）→ critical 照舊。**高熵路徑（`hardcoded_secret_high_entropy_assignment`）完全不受影響**。舊測試「含空白值也報 critical」已改為新行為。
+
 ## 語言 gating 規則
 規則有 `languages` 欄位時，只對該語言跑（`(language||'').toLowerCase() in languages`）。python-only 規則的 JS 對應注意：Python lookbehind `(?<![.\w])` 在 Node ≥16 可直接用。

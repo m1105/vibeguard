@@ -2,6 +2,11 @@
 
 All notable changes to this project. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/) with `0.x` meaning the Orca plugin API itself is still experimental.
 
+## [0.2.2] — 2026-09-18 — fewer false positives from the sensitive-assignment rule
+
+### Changed
+- **`hardcoded_secret_assignment` now looks at the value's shape** (VibeGuard deviation from DeepSec, docs/02 #16). Dogfooding showed the rule flagging `OPEN_TOKEN = "pay_corp:open"`, a regex assigned to `COUNTRY_TOKEN`, `…_CREDENTIAL_ID = "harness-dev-runtime"` and `PASSWORD='strong-pass'` examples inside comments — all as critical. Low-entropy values are now triaged: whitespace / regex metacharacters / non-ASCII → not reported; name-like variable suffixes (`_ID`, `_PREFIX`, `_NAME`, `…Hash`) → not reported; comment lines or values without digits → `low` with confidence 0.3 and a "low risk" title; everything else stays critical. The high-entropy rule is untouched.
+
 ## [0.2.1] — 2026-09-02 — installed-mode fix (first GitHub install found the integrity trap)
 
 ### Fixed
