@@ -2,6 +2,11 @@
 
 All notable changes to this project. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/) with `0.x` meaning the Orca plugin API itself is still experimental.
 
+## [0.2.3] — 2026-09-19 — innerHTML rule understands escaping
+
+### Changed
+- **`sast_xss_inner_html` analyses the right-hand side** (VibeGuard deviation, docs/02 #17; new pure module `shield/l2-xss-triage.mjs`). Literal-only values and values whose every dynamic part goes through an escaper (`esc()`, `escapeHtml()`, `DOMPurify.sanitize()`, numeric conversions…) are no longer reported; multi-line statements are read to the semicolon; calls to generator functions, `.map(fn).join()` and local variables are **verified against their definition in the same file** (every `return` / assignment, recursion ≤ 3). Unverifiable generators and partly escaped values become `medium` (confidence 0.4, "to confirm"); bare interpolation stays `high`. On the real file that prompted this, 9 high findings became 1 medium.
+
 ## [0.2.2] — 2026-09-18 — fewer false positives from the sensitive-assignment rule
 
 ### Changed

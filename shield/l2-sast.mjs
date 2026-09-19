@@ -6,6 +6,7 @@
 
 import { createFinding } from './finding.mjs';
 import { indexToLineCol } from './l1-secrets.mjs';
+import { triageInnerHtml } from './l2-xss-triage.mjs';
 
 // DeepSec 共用片段：
 // _SQL_KEYWORD = (?:SELECT|INSERT|UPDATE|DELETE)
@@ -65,6 +66,11 @@ export const SAST_RULES = [
     title: '原始錯誤詳情回給客戶端', description: '回應直接包含 error/exception/stack。', suggestion: '詳細錯誤記在內部 log，對外回通用訊息。' },
 ];
 
+const XSS_SOFT_TEXT = {
+  builder: 'innerHTML 的內容由 HTML 產生函式或 map().join() 組成，從這一行看不出有沒有跳脫——請確認該產生函式內部有跳脫外部資料。',
+  partial: 'innerHTML 的內容一部分已確認有跳脫，其餘無法從程式碼自動確認（裸插值，或用陣列 push/join 組字串的產生函式）——請確認那部分不含未跳脫的外部資料。',
+};
+
 /**
  * 掃描單一檔案的 L2 SAST 規則（regex 部分；AST taint 由 LLM 層補）。
  * @param {string} text 檔案內容
@@ -79,6 +85,7 @@ export function scanSast(text, { target = null } = {}) {
     rule.regex.lastIndex = 0; // g flag regex 是 stateful
     let m;
     while ((m = rule.regex.exec(text)) !== null) {
+      let xss = null;
       // 誤報修正（與 DeepSec 原版刻意不同，docs/02 記差異）：innerHTML/outerHTML
       // 規則的空字串豁免前瞻會被 \s* 回溯打穿（`= ''` 帶空格時失效）——
       // regex 是 quirk 測試鎖住的，改在命中後檢查右值：純空字串（清空容器）無注入風險，丟棄
@@ -88,20 +95,25 @@ export function scanSast(text, { target = null } = {}) {
           if (m[0].length === 0) rule.regex.lastIndex += 1;
           continue;
         }
+        // 右值分析（VibeGuard 擴充，docs/02 #17）：全靜態 / 全跳脫 → 不報；產生函式或部分跳脫 → medium
+        xss = triageInnerHtml(text, m.index);
+        if (xss.level === 'skip') { if (m[0].length === 0) rule.regex.lastIndex += 1; continue; }
       }
+      const soft = xss && xss.level === 'medium';
       const { line, column } = indexToLineCol(text, m.index);
       const end = indexToLineCol(text, m.index + m[0].length);
 
       findings.push(
         createFinding({
           layer: 'L2',
-          severity: rule.severity,
+          severity: soft ? 'medium' : rule.severity,
           type: rule.type,
           rule: rule.id,
-          title: rule.title,
-          description: rule.description,
+          title: soft ? rule.title + '（待確認）' : rule.title,
+          description: soft ? XSS_SOFT_TEXT[xss.kind] : rule.description,
           evidence: m[0], // 這層不遮蔽
-          suggestion: rule.suggestion,
+          suggestion: soft ? '確認上述來源都有 HTML 跳脫；確認過就按「忽略這筆」。' : rule.suggestion,
+          ...(soft ? { confidence: 0.4 } : {}),
           line,
           column,
           endLine: end.line,

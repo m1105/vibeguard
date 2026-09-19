@@ -92,10 +92,18 @@ test('negative: innerHTML=DOMPurify（無空格）不報', () => {
   assert.equal(out.filter((f) => f.rule === 'sast_xss_inner_html').length, 0);
 });
 
-test('fidelity quirk: innerHTML = DOMPurify（有空格）仍命中（與 DeepSec Python 實測一致）', () => {
-  // \s* 回溯讓負向前瞻失效，Python 版行為相同——保持忠實，不自作聰明「修復」
+test('fidelity quirk: regex 層 innerHTML = DOMPurify（有空格）仍命中；但 scanSast 的右值分析認出已消毒 → 不報（docs/02 #17）', () => {
+  // \s* 回溯讓負向前瞻失效，Python 版行為相同——regex 逐字保留（忠實度），
+  // 誤報改由命中後的右值分析（l2-xss-triage）吸收：DOMPurify.sanitize(x) 涵蓋整個右值 = escaped
+  const rule = SAST_RULES.find((r) => r.id === 'sast_xss_inner_html');
+  rule.regex.lastIndex = 0;
+  assert.ok(rule.regex.test('el.innerHTML = DOMPurify.sanitize(x)'), 'regex quirk 仍在');
+  rule.regex.lastIndex = 0;
   const out = scanSast('el.innerHTML = DOMPurify.sanitize(x)', { target: 't' });
-  assert.equal(out.filter((f) => f.rule === 'sast_xss_inner_html').length, 1);
+  assert.equal(out.filter((f) => f.rule === 'sast_xss_inner_html').length, 0);
+  // 消毒只包一部分就不放行
+  const partial = scanSast('el.innerHTML = DOMPurify.sanitize(x) + y', { target: 't' });
+  assert.equal(partial.filter((f) => f.rule === 'sast_xss_inner_html')[0].severity, 'medium');
 });
 
 test('negative: yaml.load + SafeLoader 不報（負向前瞻）', () => {
